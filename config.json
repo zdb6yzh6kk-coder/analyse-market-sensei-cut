@@ -1,0 +1,227 @@
+{
+  "app_name": "Analyse Market Sensei Cut",
+  "auth": {
+    "enabled": true,
+    "allow_registration": true,
+    "require_allowed_emails_in_cloud": true,
+    "require_email_verification": true,
+    "allowed_emails": [],
+    "verification_code_minutes": 30,
+    "database_path": "data/auth.duckdb",
+    "two_factor": {
+      "enabled": true,
+      "method": "email_code",
+      "code_minutes": 10,
+      "required_for_login": true,
+      "local_display_code": true
+    },
+    "rate_limit": {
+      "enabled": true,
+      "window_minutes": 15,
+      "password_max_failures": 5,
+      "two_factor_max_failures": 5,
+      "verification_max_failures": 5,
+      "registration_max_attempts": 3,
+      "two_factor_send_max_attempts": 3
+    },
+    "passkeys": {
+      "prepared": true,
+      "enabled": false,
+      "note": "Passkey/WebAuthn ist vorbereitet, aber noch nicht aktiv. Aktivierung erfordert eine WebAuthn-Komponente und feste HTTPS-Domain."
+    }
+  },
+  "security": {
+    "require_password_for_sensitive_settings": true,
+    "settings_password_gate": true,
+    "updates_password_gate": true,
+    "ports_and_integrations_password_gate": true,
+    "store_api_keys_in_config": false,
+    "sensitive_unlock_minutes": 15,
+    "note": "Settings, Updates, Ports und API-Platzhalter sind nach Login zusaetzlich per Passwort-Gate geschuetzt."
+  },
+  "ports_and_integrations": {
+    "protected": true,
+    "execute_api_calls": false,
+    "streamlit_port": 8501,
+    "local_api_port": "",
+    "webhook_port": "",
+    "protected_links": [
+      {
+        "enabled": false,
+        "name": "Beispiel Dashboard",
+        "url": "https://example.com",
+        "category": "seite",
+        "note": "Hier spaeter Link eintragen"
+      }
+    ],
+    "protected_apis": [
+      {
+        "enabled": false,
+        "name": "Beispiel API",
+        "base_url": "https://api.example.com",
+        "port": "",
+        "path": "/v1/status",
+        "method": "GET",
+        "auth_type": "api_key",
+        "api_key_secret_ref": "EXAMPLE_API_KEY",
+        "note": "Secret-Wert in Streamlit Secrets oder ENV ablegen"
+      }
+    ]
+  },
+  "ui": {
+    "style_reference": "TradingView-artige Analyseoberflaeche, ohne Marken-Kopie",
+    "system_alert_color": "#ff2bd6",
+    "system_alert_meaning": "Pink markiert System-Erkennung, Speicherung, Breakout-Watch und Bot-Vorbereitung. Keine Orders."
+  },
+  "runtime_mode": {
+    "active": "papertrading",
+    "available": [
+      "papertrading",
+      "real"
+    ],
+    "orders_enabled": false,
+    "broker_enabled": false,
+    "description": "Vorbereiteter Modus-Schalter. Es werden keine Orders ausgefuehrt."
+  },
+  "tracking": {
+    "database_path": "data/portfolio_tracker.duckdb",
+    "default_quantity": 1.0,
+    "paper_enabled": true,
+    "real_money_enabled": true,
+    "setup_categories": [
+      "Trendfolge",
+      "Breakout",
+      "Pullback",
+      "Mean Reversion",
+      "Relative Staerke",
+      "Defensiv Beobachtung",
+      "Sonstiges"
+    ],
+    "rule_violation_options": [
+      "Score unter Mindestwert",
+      "Risk State BLOCKED ignoriert",
+      "Trend gegen Richtung",
+      "Close unter EMA200",
+      "Stop fehlt",
+      "Ziel fehlt",
+      "Positionsgroesse zu hoch",
+      "Marktampel nicht OK",
+      "Keine klare These"
+    ],
+    "description": "Manuelles Tracking fuer Papertrading und Real Money. Keine Orders, keine Broker-Anbindung."
+  },
+  "workspace": {
+    "database_path": "data/workspace.duckdb",
+    "default_focus": "Schnellblick",
+    "energy_mode": "manual_cache",
+    "categories": [
+      "Markt",
+      "Watchlist",
+      "Paper",
+      "Real",
+      "Research"
+    ],
+    "data_collection": {
+      "manual_button": true,
+      "auto_collect_on_analysis": false,
+      "load_on_start": true,
+      "reports_only_on_button": true,
+      "snapshots_only_on_analysis": true,
+      "background_jobs_cloud": false,
+      "background_jobs_local": true
+    },
+    "description": "Vereinfachter TradingView-artiger Workspace fuer Schnellzugriff, gespeicherte Themen und Datensammlung."
+  },
+  "risk_management": {
+    "mode": "rules_only",
+    "principles": [
+      "Keine Orders",
+      "Keine Broker-Funktion",
+      "Keine Gefuehlsentscheidungen",
+      "Nur harte Regeln"
+    ],
+    "thresholds": {
+      "blocked_score_below": 40,
+      "reduced_score_below": 60
+    },
+    "limits": {
+      "standard_risk_per_signal_pct": 0.5,
+      "reduced_risk_per_signal_pct": 0.25,
+      "standard_position_size_pct": 5.0,
+      "reduced_position_size_pct": 2.5,
+      "technical_stop_distance_pct": 3.0,
+      "portfolio_daily_loss_limit_pct": 1.0,
+      "portfolio_weekly_loss_limit_pct": 3.0,
+      "max_correlation_group_pct": 20.0
+    },
+    "hard_rules": [
+      "BLOCKED wenn Score unter 40",
+      "BLOCKED wenn Symbol bearish",
+      "BLOCKED wenn Close unter EMA200",
+      "BLOCKED wenn SPY und QQQ bearish",
+      "REDUCED wenn Score unter 60",
+      "REDUCED wenn Close unter EMA20 oder EMA50",
+      "REDUCED wenn relative Staerke gegen QQQ negativ",
+      "REDUCED wenn SPY und QQQ nicht gleiche Richtung haben"
+    ]
+  },
+  "data": {
+    "timeframes": [
+      "1d",
+      "1wk",
+      "1mo"
+    ],
+    "periods": {
+      "1d": "2y",
+      "1wk": "10y",
+      "1mo": "20y"
+    },
+    "cache_dir": "data/cache",
+    "database_path": "data/market.duckdb",
+    "prefer_cache": true,
+    "cache_max_age_hours": {
+      "1d": 6,
+      "1wk": 24,
+      "1mo": 72,
+      "default": 24
+    }
+  },
+  "dashboard_symbols": [
+    {
+      "label": "SPY",
+      "ticker": "SPY"
+    },
+    {
+      "label": "QQQ",
+      "ticker": "QQQ"
+    },
+    {
+      "label": "GLD",
+      "ticker": "GLD"
+    },
+    {
+      "label": "DAX-Proxy",
+      "ticker": "^GDAXI"
+    }
+  ],
+  "watchlist": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "TSLA"
+  ],
+  "watchlist_categories": [
+    "Indizes",
+    "Aktien",
+    "Gold",
+    "Krypto",
+    "Eigene Ideen"
+  ],
+  "benchmark": "QQQ",
+  "reports_dir": "reports",
+  "updates_dir": "updates",
+  "logs_dir": "logs"
+}

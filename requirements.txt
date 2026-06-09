@@ -1,0 +1,11 @@
+streamlit>=1.54
+pandas>=2.2
+numpy>=1.26
+yfinance>=0.2
+duckdb>=1.0
+plotly>=5.22
+pillow>=12.2
+requests>=2.33
+urllib3>=2.7
+curl-cffi>=0.15
+pyarrow>=23.0.1
