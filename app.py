@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import hmac
 import logging
 import os
+import re
+import secrets
 import subprocess
 import time
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from typing import Optional
 
+import duckdb
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -22,7 +27,23 @@ from modules.auth import AuthStore, send_two_factor_email, send_verification_ema
 try:
     from modules.auth import send_password_reset_email
 except ImportError:
-    send_password_reset_email = None
+    try:
+        from modules.auth import send_auth_code_email
+    except ImportError:
+        send_auth_code_email = None
+
+    if send_auth_code_email is not None:
+        def send_password_reset_email(email: str, code: str, settings: dict):
+            return send_auth_code_email(
+                email=email,
+                code=code,
+                settings=settings,
+                subject="Analyse Market Sensei Cut - Passwort zuruecksetzen",
+                intro="Dein Passwort-Reset-Code fuer Analyse Market Sensei Cut lautet:",
+            )
+    else:
+        def send_password_reset_email(email: str, code: str, settings: dict):
+            return send_two_factor_email(email, code, settings)
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
 from modules.portfolio_tracker import PortfolioTracker
@@ -60,6 +81,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SYSTEM_ALERT_COLOR = "#ff2bd6"
+COMPAT_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+COMPAT_PBKDF2_ITERATIONS = 220_000
+COMPAT_RATE_LIMIT = {
+    "enabled": True,
+    "window_minutes": 15,
+    "password_max_failures": 5,
+    "two_factor_max_failures": 5,
+    "verification_max_failures": 5,
+    "registration_max_attempts": 3,
+    "two_factor_send_max_attempts": 3,
+    "password_reset_send_max_attempts": 3,
+    "password_reset_max_failures": 5,
+}
 
 
 def make_key(*parts):
@@ -72,6 +106,335 @@ def make_key(*parts):
         .replace(":", "_")
         for p in parts
     )
+
+
+class CompatAuthResult:
+    def __init__(
+        self,
+        ok: bool,
+        message: str,
+        email: Optional[str] = None,
+        verification_code: Optional[str] = None,
+    ) -> None:
+        self.ok = ok
+        self.message = message
+        self.email = email
+        self.verification_code = verification_code
+
+
+def ensure_password_reset_backend(store: AuthStore) -> bool:
+    if hasattr(store, "create_password_reset_code") and hasattr(store, "reset_password"):
+        return True
+
+    store_class = store.__class__
+    if not hasattr(store_class, "create_password_reset_code"):
+        setattr(store_class, "create_password_reset_code", _compat_create_password_reset_code)
+    if not hasattr(store_class, "reset_password"):
+        setattr(store_class, "reset_password", _compat_reset_password)
+    return hasattr(store, "create_password_reset_code") and hasattr(store, "reset_password")
+
+
+def _compat_create_password_reset_code(
+    self,
+    email: str,
+    code_minutes: int,
+    rate_limit: Optional[dict] = None,
+):
+    normalized = _compat_normalize_email(email)
+    if not COMPAT_EMAIL_RE.match(normalized):
+        return CompatAuthResult(False, "Bitte gib eine gueltige E-Mail-Adresse ein.")
+
+    settings = _compat_rate_limit_settings(rate_limit)
+    max_attempts = int(
+        settings.get(
+            "password_reset_send_max_attempts",
+            settings.get("two_factor_send_max_attempts", 3),
+        )
+    )
+    if _compat_too_many_recent_attempts(
+        self,
+        normalized,
+        "password_reset_send",
+        max_attempts,
+        int(settings["window_minutes"]),
+    ):
+        return CompatAuthResult(
+            False,
+            "Zu viele Passwort-Reset-Anforderungen. Bitte spaeter erneut versuchen.",
+        )
+
+    now = datetime.now()
+    con = duckdb.connect(str(self.database_path))
+    try:
+        _compat_ensure_auth_tables(con)
+        existing = con.execute(
+            """
+            SELECT email, is_verified
+            FROM users
+            WHERE email = ?
+            """,
+            [normalized],
+        ).fetchone()
+        if not existing or not existing[1]:
+            _compat_record_auth_attempt(con, normalized, "password_reset_send", False)
+            return CompatAuthResult(
+                True,
+                "Wenn die E-Mail registriert ist, wurde ein Reset-Code vorbereitet.",
+                email=normalized,
+            )
+
+        code = _compat_create_verification_code()
+        salt = _compat_create_salt()
+        code_hash = _compat_hash_secret(code, salt)
+        expires_at = now + timedelta(minutes=code_minutes)
+        con.execute(
+            """
+            INSERT INTO two_factor_codes VALUES (?, ?, ?, ?, ?, NULL, ?)
+            """,
+            [normalized, code_hash, salt, "password_reset", expires_at, now],
+        )
+        _compat_record_auth_attempt(con, normalized, "password_reset_send", True)
+    finally:
+        con.close()
+
+    return CompatAuthResult(
+        True,
+        "Passwort-Reset-Code erstellt.",
+        email=normalized,
+        verification_code=code,
+    )
+
+
+def _compat_reset_password(
+    self,
+    email: str,
+    code: str,
+    new_password: str,
+    rate_limit: Optional[dict] = None,
+):
+    normalized = _compat_normalize_email(email)
+    validation = _compat_validate_email_and_password(normalized, new_password)
+    if validation:
+        return CompatAuthResult(False, validation)
+
+    settings = _compat_rate_limit_settings(rate_limit)
+    max_failures = int(
+        settings.get(
+            "password_reset_max_failures",
+            settings.get("verification_max_failures", 5),
+        )
+    )
+    if _compat_too_many_recent_failures(
+        self,
+        normalized,
+        "password_reset",
+        max_failures,
+        int(settings["window_minutes"]),
+    ):
+        return CompatAuthResult(False, "Zu viele falsche Reset-Codes. Bitte spaeter erneut versuchen.")
+
+    con = duckdb.connect(str(self.database_path))
+    try:
+        _compat_ensure_auth_tables(con)
+        row = con.execute(
+            """
+            SELECT code_hash, salt, expires_at
+            FROM two_factor_codes
+            WHERE email = ? AND purpose = 'password_reset' AND used_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            [normalized],
+        ).fetchone()
+        if not row:
+            _compat_record_auth_attempt(con, normalized, "password_reset", False)
+            return CompatAuthResult(False, "Kein offener Reset-Code gefunden.")
+
+        code_hash, salt, expires_at = row
+        if datetime.now() > expires_at:
+            _compat_record_auth_attempt(con, normalized, "password_reset", False)
+            return CompatAuthResult(False, "Der Reset-Code ist abgelaufen.")
+        if not hmac.compare_digest(_compat_hash_secret(code.strip(), salt), code_hash):
+            _compat_record_auth_attempt(con, normalized, "password_reset", False)
+            return CompatAuthResult(False, "Der Reset-Code ist falsch.")
+
+        password_salt = _compat_create_salt()
+        password_hash = _compat_hash_secret(new_password, password_salt)
+        now = datetime.now()
+        con.execute(
+            """
+            UPDATE users
+            SET password_hash = ?, salt = ?, is_verified = true, verified_at = COALESCE(verified_at, ?)
+            WHERE email = ?
+            """,
+            [password_hash, password_salt, now, normalized],
+        )
+        con.execute(
+            """
+            UPDATE two_factor_codes
+            SET used_at = ?
+            WHERE email = ? AND purpose = 'password_reset' AND used_at IS NULL
+            """,
+            [now, normalized],
+        )
+        _compat_record_auth_attempt(con, normalized, "password_reset", True)
+    finally:
+        con.close()
+
+    return CompatAuthResult(True, "Passwort wurde aktualisiert. Du kannst dich jetzt anmelden.", normalized)
+
+
+def _compat_ensure_auth_tables(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS two_factor_codes (
+            email VARCHAR NOT NULL,
+            code_hash VARCHAR NOT NULL,
+            salt VARCHAR NOT NULL,
+            purpose VARCHAR NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+            email VARCHAR NOT NULL,
+            purpose VARCHAR NOT NULL,
+            success BOOLEAN NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+        """
+    )
+
+
+def _compat_recent_attempt_count(
+    store,
+    email: str,
+    purpose: str,
+    window_minutes: int,
+    success: Optional[bool] = None,
+) -> int:
+    cutoff = datetime.now() - timedelta(minutes=max(1, int(window_minutes)))
+    con = duckdb.connect(str(store.database_path))
+    try:
+        _compat_ensure_auth_tables(con)
+        if success is None:
+            return int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM auth_attempts
+                    WHERE email = ? AND purpose = ? AND created_at >= ?
+                    """,
+                    [email, purpose, cutoff],
+                ).fetchone()[0]
+            )
+        return int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+                FROM auth_attempts
+                WHERE email = ? AND purpose = ? AND success = ? AND created_at >= ?
+                """,
+                [email, purpose, bool(success), cutoff],
+            ).fetchone()[0]
+        )
+    finally:
+        con.close()
+
+
+def _compat_too_many_recent_attempts(
+    store,
+    email: str,
+    purpose: str,
+    max_attempts: int,
+    window_minutes: int,
+) -> bool:
+    if max_attempts <= 0:
+        return False
+    return _compat_recent_attempt_count(store, email, purpose, window_minutes) >= max_attempts
+
+
+def _compat_too_many_recent_failures(
+    store,
+    email: str,
+    purpose: str,
+    max_failures: int,
+    window_minutes: int,
+) -> bool:
+    if max_failures <= 0:
+        return False
+    return _compat_recent_attempt_count(
+        store,
+        email,
+        purpose,
+        window_minutes,
+        success=False,
+    ) >= max_failures
+
+
+def _compat_record_auth_attempt(con, email: str, purpose: str, success: bool) -> None:
+    con.execute(
+        """
+        INSERT INTO auth_attempts VALUES (?, ?, ?, ?)
+        """,
+        [_compat_normalize_email(email), purpose, bool(success), datetime.now()],
+    )
+
+
+def _compat_rate_limit_settings(rate_limit: Optional[dict]) -> dict:
+    settings = COMPAT_RATE_LIMIT.copy()
+    if rate_limit:
+        settings.update({key: value for key, value in rate_limit.items() if value is not None})
+    if not settings.get("enabled", True):
+        for key in [
+            "password_max_failures",
+            "two_factor_max_failures",
+            "verification_max_failures",
+            "registration_max_attempts",
+            "two_factor_send_max_attempts",
+            "password_reset_send_max_attempts",
+            "password_reset_max_failures",
+        ]:
+            settings[key] = 0
+    return settings
+
+
+def _compat_normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _compat_validate_email_and_password(email: str, password: str) -> Optional[str]:
+    if not COMPAT_EMAIL_RE.match(email):
+        return "Bitte gib eine gueltige E-Mail-Adresse ein."
+    if len(password) < 10:
+        return "Das Passwort muss mindestens 10 Zeichen lang sein."
+    if password.lower() == password or password.upper() == password:
+        return "Das Passwort braucht Gross- und Kleinbuchstaben."
+    if not any(char.isdigit() for char in password):
+        return "Das Passwort braucht mindestens eine Zahl."
+    return None
+
+
+def _compat_create_salt() -> str:
+    return secrets.token_hex(16)
+
+
+def _compat_create_verification_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _compat_hash_secret(value: str, salt: str) -> str:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        value.encode("utf-8"),
+        salt.encode("utf-8"),
+        COMPAT_PBKDF2_ITERATIONS,
+    )
+    return digest.hex()
 
 
 def main() -> None:
@@ -3068,10 +3431,7 @@ def authenticate(app_env: str, config: dict) -> bool:
 
     with reset_tab:
         st.caption("Reset-Code anfordern und danach ein neues Passwort setzen.")
-        reset_backend_supported = hasattr(store, "create_password_reset_code") and hasattr(
-            store,
-            "reset_password",
-        )
+        reset_backend_supported = ensure_password_reset_backend(store)
         if not reset_backend_supported:
             st.warning(
                 "Passwort-Reset ist in dieser Version noch nicht vollstaendig geladen. "
