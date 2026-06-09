@@ -18,7 +18,11 @@ from plotly.subplots import make_subplots
 
 from main import run_evening_analysis
 from modules.app_env import get_app_env, is_cloud_env
-from modules.auth import AuthStore, send_password_reset_email, send_two_factor_email, send_verification_email
+from modules.auth import AuthStore, send_two_factor_email, send_verification_email
+try:
+    from modules.auth import send_password_reset_email
+except ImportError:
+    send_password_reset_email = None
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
 from modules.portfolio_tracker import PortfolioTracker
@@ -3064,6 +3068,15 @@ def authenticate(app_env: str, config: dict) -> bool:
 
     with reset_tab:
         st.caption("Reset-Code anfordern und danach ein neues Passwort setzen.")
+        reset_backend_supported = hasattr(store, "create_password_reset_code") and hasattr(
+            store,
+            "reset_password",
+        )
+        if not reset_backend_supported:
+            st.warning(
+                "Passwort-Reset ist in dieser Version noch nicht vollstaendig geladen. "
+                "Bitte `modules/auth.py` zusammen mit `app.py` deployen."
+            )
         reset_email = st.text_input(
             "E-Mail fuer Reset-Code",
             key=make_key("auth", "password_reset", "request_email"),
@@ -3073,7 +3086,9 @@ def authenticate(app_env: str, config: dict) -> bool:
             key=make_key("auth", "password_reset", "request_submit"),
             use_container_width=True,
         ):
-            if is_cloud_env(app_env) and not smtp_config_complete():
+            if not reset_backend_supported:
+                st.error("Passwort-Reset Backend fehlt. Bitte `modules/auth.py` aktualisieren.")
+            elif is_cloud_env(app_env) and not smtp_config_complete():
                 st.error("Passwort-Reset ist im Cloud-Modus blockiert, bis SMTP-Secrets vollstaendig gesetzt sind.")
             else:
                 code_minutes = int(auth_config.get("password_reset_code_minutes", 15))
@@ -3086,6 +3101,16 @@ def authenticate(app_env: str, config: dict) -> bool:
                     st.error(result.message)
                 elif not result.verification_code:
                     st.success("Wenn die E-Mail registriert ist, wurde ein Reset-Code gesendet.")
+                elif send_password_reset_email is None:
+                    if is_cloud_env(app_env):
+                        st.error(
+                            "Passwort-Reset-Mailfunktion fehlt. Bitte `modules/auth.py` neu deployen."
+                        )
+                    else:
+                        st.warning(
+                            "Mailfunktion ist nicht geladen. Nur lokal wird der Reset-Code angezeigt."
+                        )
+                        st.code(result.verification_code)
                 else:
                     smtp_result = send_password_reset_email(
                         result.email or reset_email,
@@ -3128,7 +3153,9 @@ def authenticate(app_env: str, config: dict) -> bool:
             key=make_key("auth", "password_reset", "confirm_submit"),
             use_container_width=True,
         ):
-            if new_password != new_password_repeat:
+            if not reset_backend_supported:
+                st.error("Passwort-Reset Backend fehlt. Bitte `modules/auth.py` aktualisieren.")
+            elif new_password != new_password_repeat:
                 st.error("Die Passwoerter stimmen nicht ueberein.")
             else:
                 result = store.reset_password(
