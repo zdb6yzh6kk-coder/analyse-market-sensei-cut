@@ -18,7 +18,7 @@ from plotly.subplots import make_subplots
 
 from main import run_evening_analysis
 from modules.app_env import get_app_env, is_cloud_env
-from modules.auth import AuthStore, send_two_factor_email, send_verification_email
+from modules.auth import AuthStore, send_password_reset_email, send_two_factor_email, send_verification_email
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
 from modules.portfolio_tracker import PortfolioTracker
@@ -310,13 +310,19 @@ def enforce_security_defaults(config: dict, app_env: str) -> dict:
     auth["require_email_verification"] = True
     auth.setdefault("allow_registration", True)
     auth.setdefault("verification_code_minutes", 30)
+    auth.setdefault("password_reset_code_minutes", 15)
     auth.setdefault("database_path", "data/auth.duckdb")
     if is_cloud_env(app_env):
         auth["require_allowed_emails_in_cloud"] = True
 
     two_factor = auth.setdefault("two_factor", {})
-    two_factor["enabled"] = True
-    two_factor["required_for_login"] = True
+    two_factor.setdefault("enabled", True)
+    two_factor.setdefault("required_for_login", bool(two_factor.get("enabled", True)))
+    if is_cloud_env(app_env):
+        two_factor["enabled"] = True
+        two_factor["required_for_login"] = True
+    elif not two_factor.get("enabled", True):
+        two_factor["required_for_login"] = False
     two_factor.setdefault("method", "email_code")
     two_factor.setdefault("code_minutes", 10)
     two_factor.setdefault("local_display_code", True)
@@ -329,6 +335,8 @@ def enforce_security_defaults(config: dict, app_env: str) -> dict:
     rate_limit.setdefault("verification_max_failures", 5)
     rate_limit.setdefault("registration_max_attempts", 3)
     rate_limit.setdefault("two_factor_send_max_attempts", 3)
+    rate_limit.setdefault("password_reset_send_max_attempts", 3)
+    rate_limit.setdefault("password_reset_max_failures", 5)
 
     security = config.setdefault("security", {})
     security["require_password_for_sensitive_settings"] = True
@@ -2640,7 +2648,7 @@ def render_settings(app_env: str, key_prefix: str) -> None:
         return
 
     st.write(f"APP_ENV: `{app_env}`")
-    render_account_settings(config)
+    render_account_settings(config, app_env, key_prefix=make_key(key_prefix, "account"))
     render_runtime_mode_settings(config, key_prefix=make_key(key_prefix, "runtime_mode"))
     render_ports_and_integrations_settings(config, key_prefix=make_key(key_prefix, "ports_integrations"))
     if is_cloud_env(app_env):
@@ -2671,7 +2679,7 @@ def render_settings(app_env: str, key_prefix: str) -> None:
             st.error(f"Config konnte nicht gespeichert werden: {exc}")
 
 
-def render_account_settings(config: dict) -> None:
+def render_account_settings(config: dict, app_env: str, key_prefix: str) -> None:
     st.markdown("### Account")
     email = st.session_state.get("authenticated_email")
     if not email:
@@ -2680,7 +2688,36 @@ def render_account_settings(config: dict) -> None:
 
     st.write(f"E-Mail-Identitaet: `{email}`")
     two_factor = config.get("auth", {}).get("two_factor", {})
-    st.write(f"Zwei-Faktor-Login aktiv: `{two_factor.get('enabled', True)}`")
+    two_factor_enabled = bool(two_factor.get("enabled", True))
+    st.write(f"Zwei-Faktor-Login aktiv: `{two_factor_enabled}`")
+    if is_cloud_env(app_env):
+        st.info("Cloud-Modus: 2FA bleibt fuer den Online-Betrieb fest aktiv.")
+    else:
+        with st.form(make_key(key_prefix, "two_factor_form")):
+            selected = st.toggle(
+                "2FA im lokalen Entwicklungsmodus aktiv",
+                value=two_factor_enabled,
+                key=make_key(key_prefix, "two_factor_enabled"),
+            )
+            st.caption(
+                "Nur lokal fuer Entwicklung. In APP_ENV=cloud wird 2FA automatisch wieder erzwungen."
+            )
+            submitted = st.form_submit_button(
+                "2FA-Einstellung speichern",
+                key=make_key(key_prefix, "two_factor_save"),
+                use_container_width=True,
+            )
+        if submitted:
+            latest = enforce_security_defaults(load_config(CONFIG_PATH), app_env)
+            latest_two_factor = latest.setdefault("auth", {}).setdefault("two_factor", {})
+            latest_two_factor["enabled"] = bool(selected)
+            latest_two_factor["required_for_login"] = bool(selected)
+            save_config(latest, CONFIG_PATH)
+            st.session_state.pop("pending_2fa_email", None)
+            st.session_state.pop("local_2fa_code", None)
+            st.success("2FA-Einstellung gespeichert. Der naechste Login nutzt diese Einstellung.")
+            st.rerun()
+
     store = AuthStore(BASE_DIR / config.get("auth", {}).get("database_path", "data/auth.duckdb"))
     passkey = store.passkey_status(email)
     st.write(f"Passkey vorbereitet: `{passkey['prepared']}`")
@@ -2899,8 +2936,8 @@ def authenticate(app_env: str, config: dict) -> bool:
     st.subheader("Anmeldung")
     st.caption("Login mit bestaetigter E-Mail-Identitaet. Keine Trading-Funktionen.")
 
-    login_tab, register_tab, confirm_tab, passkey_tab = st.tabs(
-        ["Login", "Registrieren", "E-Mail bestaetigen", "Passkey"]
+    login_tab, register_tab, confirm_tab, reset_tab, passkey_tab = st.tabs(
+        ["Login", "Registrieren", "E-Mail bestaetigen", "Passwort vergessen", "Passkey"]
     )
 
     with login_tab:
@@ -3024,6 +3061,86 @@ def authenticate(app_env: str, config: dict) -> bool:
                 st.success(result.message)
             else:
                 st.error(result.message)
+
+    with reset_tab:
+        st.caption("Reset-Code anfordern und danach ein neues Passwort setzen.")
+        reset_email = st.text_input(
+            "E-Mail fuer Reset-Code",
+            key=make_key("auth", "password_reset", "request_email"),
+        )
+        if st.button(
+            "Reset-Code senden",
+            key=make_key("auth", "password_reset", "request_submit"),
+            use_container_width=True,
+        ):
+            if is_cloud_env(app_env) and not smtp_config_complete():
+                st.error("Passwort-Reset ist im Cloud-Modus blockiert, bis SMTP-Secrets vollstaendig gesetzt sind.")
+            else:
+                code_minutes = int(auth_config.get("password_reset_code_minutes", 15))
+                result = store.create_password_reset_code(
+                    reset_email,
+                    code_minutes=code_minutes,
+                    rate_limit=rate_limit,
+                )
+                if not result.ok:
+                    st.error(result.message)
+                elif not result.verification_code:
+                    st.success("Wenn die E-Mail registriert ist, wurde ein Reset-Code gesendet.")
+                else:
+                    smtp_result = send_password_reset_email(
+                        result.email or reset_email,
+                        result.verification_code or "",
+                        smtp_settings(),
+                    )
+                    if smtp_result.ok:
+                        st.success("Wenn die E-Mail registriert ist, wurde ein Reset-Code gesendet.")
+                    elif is_cloud_env(app_env):
+                        st.error(smtp_result.message)
+                        st.info("In Streamlit Secrets muessen SMTP_* Werte gesetzt sein.")
+                    else:
+                        st.warning("SMTP ist nicht konfiguriert. Nur lokal wird der Reset-Code angezeigt.")
+                        if result.verification_code:
+                            st.code(result.verification_code)
+                        else:
+                            st.info("Wenn die E-Mail registriert ist, wurde ein Reset-Code vorbereitet.")
+
+        st.divider()
+        reset_confirm_email = st.text_input(
+            "E-Mail",
+            key=make_key("auth", "password_reset", "confirm_email"),
+        )
+        reset_code = st.text_input(
+            "Reset-Code",
+            key=make_key("auth", "password_reset", "code"),
+        )
+        new_password = st.text_input(
+            "Neues Passwort",
+            type="password",
+            key=make_key("auth", "password_reset", "new_password"),
+        )
+        new_password_repeat = st.text_input(
+            "Neues Passwort wiederholen",
+            type="password",
+            key=make_key("auth", "password_reset", "new_password_repeat"),
+        )
+        if st.button(
+            "Passwort neu setzen",
+            key=make_key("auth", "password_reset", "confirm_submit"),
+            use_container_width=True,
+        ):
+            if new_password != new_password_repeat:
+                st.error("Die Passwoerter stimmen nicht ueberein.")
+            else:
+                result = store.reset_password(
+                    reset_confirm_email,
+                    reset_code,
+                    new_password,
+                    rate_limit=rate_limit,
+                )
+                if result.ok:
+                    st.success(result.message)
+                else:
+                    st.error(result.message)
 
     with passkey_tab:
         st.info(
