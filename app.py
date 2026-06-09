@@ -58,6 +58,18 @@ logger = logging.getLogger(__name__)
 SYSTEM_ALERT_COLOR = "#ff2bd6"
 
 
+def make_key(*parts):
+    return "_".join(
+        str(p)
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(".", "_")
+        .replace(":", "_")
+        for p in parts
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Analyse Market Sensei Cut",
@@ -92,21 +104,21 @@ def main() -> None:
         ]
     )
     with tabs[0]:
-        render_workspace(config, app_env)
+        render_workspace(config, app_env, key_prefix="workspace")
     with tabs[1]:
-        render_dashboard(config, app_env)
+        render_dashboard(config, app_env, key_prefix="dashboard")
     with tabs[2]:
-        render_watchlist(config)
+        render_watchlist(config, key_prefix="watchlist")
     with tabs[3]:
-        render_papertrading(config)
+        render_papertrading(config, key_prefix="papertrading")
     with tabs[4]:
-        render_real_money(config)
+        render_real_money(config, key_prefix="real_money")
     with tabs[5]:
-        render_reports(config)
+        render_reports(config, key_prefix="reports")
     with tabs[6]:
-        render_updates(config, app_env)
+        render_updates(config, app_env, key_prefix="updates")
     with tabs[7]:
-        render_settings(app_env)
+        render_settings(app_env, key_prefix="settings")
     render_footer()
 
 
@@ -407,12 +419,16 @@ def enforce_security_defaults(config: dict, app_env: str) -> dict:
     return config
 
 
-def render_dashboard(config: dict, app_env: str) -> None:
+def render_dashboard(config: dict, app_env: str, key_prefix: str) -> None:
     result = st.session_state.analysis_result
     dashboard = result["dashboard"]
 
     st.subheader("Dashboard")
-    if st.button("Abendanalyse jetzt starten", use_container_width=True):
+    if st.button(
+        "Abendanalyse jetzt starten",
+        key=make_key(key_prefix, "evening_analysis_now"),
+        use_container_width=True,
+    ):
         evening_result = run_evening_analysis(
             require_power=not is_cloud_env(app_env),
             allow_cloud=True,
@@ -431,25 +447,29 @@ def render_dashboard(config: dict, app_env: str) -> None:
     st.write(f"Letzte Aktualisierung: `{result['updated_at']}`")
     render_timeframe_buttons(
         config["data"].get("timeframes", ["1d", "1wk", "1mo"]),
-        "dashboard_timeframe",
-        "dashboard",
+        make_key(key_prefix, "timeframe_state"),
+        key_prefix,
     )
     timeframe = st.selectbox(
         "Timeframe",
         config["data"].get("timeframes", ["1d", "1wk", "1mo"]),
-        key="dashboard_timeframe",
+        key=make_key(key_prefix, "timeframe_state"),
     )
     filtered = dashboard[dashboard["timeframe"] == timeframe]
     render_market_traffic_light(result, timeframe)
     render_summary_metrics(filtered)
-    with st.expander("Details anzeigen", expanded=False):
-        render_analysis_table(filtered)
-    with st.expander("Score-Charts anzeigen", expanded=False):
-        render_score_chart(filtered, f"Dashboard Scores {timeframe}")
-    render_report_previews(config, compact=True)
+    with st.expander(f"Details anzeigen ({key_prefix})", expanded=False):
+        render_analysis_table(filtered, key_prefix=make_key(key_prefix, "details_table"))
+    with st.expander(f"Score-Charts anzeigen ({key_prefix})", expanded=False):
+        render_score_chart(
+            filtered,
+            f"Dashboard Scores {timeframe}",
+            key_prefix=make_key(key_prefix, "score_chart"),
+        )
+    render_report_previews(config, compact=True, key_prefix=make_key(key_prefix, "report_previews"))
 
 
-def render_workspace(config: dict, app_env: str) -> None:
+def render_workspace(config: dict, app_env: str, key_prefix: str) -> None:
     result = st.session_state.analysis_result
     store = _workspace_store(config)
     email = st.session_state.get("authenticated_email", "local")
@@ -462,33 +482,33 @@ def render_workspace(config: dict, app_env: str) -> None:
 
     render_workspace_status(config, result)
     render_analysis_terminal_bar(result, timeframes)
-    render_mobile_quick_view(config, store, email, result, timeframes)
-    render_today_overview(config, store, email, result, timeframes)
+    render_mobile_quick_view(config, store, email, result, timeframes, key_prefix=make_key(key_prefix, "mobile"))
+    render_today_overview(config, store, email, result, timeframes, key_prefix=make_key(key_prefix, "today"))
     st.divider()
     st.markdown("### Detailansicht")
 
     col_left, col_right = st.columns([1, 2])
     with col_left:
         st.markdown("### Fokus")
-        selected_topic = render_saved_topics_picker(store, email)
+        selected_topic = render_saved_topics_picker(store, email, key_prefix=make_key(key_prefix, "saved_topics"))
         default_ticker = selected_topic.get("ticker") if selected_topic else symbols[0]
         default_timeframe = selected_topic.get("timeframe") if selected_topic else timeframes[0]
         if default_ticker and default_ticker not in symbols:
             symbols.insert(0, default_ticker)
         apply_selected_topic(selected_topic)
-        render_quick_symbol_buttons(symbols)
-        render_timeframe_buttons(timeframes, "workspace_timeframe", "workspace")
+        render_quick_symbol_buttons(symbols, key_prefix=make_key(key_prefix, "quick_symbols"))
+        render_timeframe_buttons(timeframes, make_key(key_prefix, "timeframe"), make_key(key_prefix, "timeframe_buttons"))
         ticker = st.selectbox(
             "Ticker",
             symbols,
             index=safe_index(symbols, default_ticker),
-            key="workspace_ticker",
+            key=make_key(key_prefix, "ticker"),
         )
         timeframe = st.selectbox(
             "Timeframe",
             timeframes,
             index=safe_index(timeframes, default_timeframe),
-            key="workspace_timeframe",
+            key=make_key(key_prefix, "timeframe"),
         )
         focus_modes = ["Schnellblick", "Chart", "Daten sammeln"]
         focus_mode = st.radio(
@@ -499,21 +519,30 @@ def render_workspace(config: dict, app_env: str) -> None:
                 config.get("workspace", {}).get("default_focus", "Schnellblick"),
             ),
             horizontal=False,
-            key="workspace_focus_mode",
+            key=make_key(key_prefix, "focus_mode"),
         )
 
         col_action_1, col_action_2 = st.columns(2)
         with col_action_1:
-            if st.button("Analysieren", key="workspace_analyze", type="primary", use_container_width=True):
+            if st.button(
+                "Analysieren",
+                key=make_key(key_prefix, "analyze"),
+                type="primary",
+                use_container_width=True,
+            ):
                 _run_update(config, generate_reports=True)
                 store.record_event(email, "data_collection", ticker, timeframe, "manual")
         with col_action_2:
-            if st.button("Beobachten", key="workspace_observe", use_container_width=True):
+            if st.button(
+                "Beobachten",
+                key=make_key(key_prefix, "observe"),
+                use_container_width=True,
+            ):
                 observe_symbol(store, email, ticker, note=f"Fokus {timeframe}")
                 st.success(f"{ticker} wurde beobachtet. Pink markiert den Alert-Datenpunkt.")
                 st.rerun()
 
-        render_save_topic_form(config, store, email, ticker, timeframe)
+        render_save_topic_form(config, store, email, ticker, timeframe, key_prefix=make_key(key_prefix, "save_topic"))
         render_custom_watchlists(
             config=config,
             store=store,
@@ -525,11 +554,19 @@ def render_workspace(config: dict, app_env: str) -> None:
 
     with col_right:
         row = analysis_row_for_ticker(result, ticker, timeframe)
-        render_workspace_focus_card(row, ticker, timeframe)
+        render_workspace_focus_card(row, ticker, timeframe, key_prefix=make_key(key_prefix, "focus_card"))
         if focus_mode in ["Chart", "Daten sammeln"]:
-            render_symbol_chart(config, result, ticker, timeframe, store, email)
+            render_symbol_chart(
+                config,
+                result,
+                ticker,
+                timeframe,
+                store,
+                email,
+                key_prefix=make_key(key_prefix, "chart"),
+            )
         if focus_mode == "Daten sammeln":
-            render_collection_overview(config, store, email)
+            render_collection_overview(config, store, email, key_prefix=make_key(key_prefix, "collection"))
 
 
 def render_workspace_status(config: dict, result: dict) -> None:
@@ -558,11 +595,14 @@ def render_mobile_quick_view(
     email: str,
     result: dict,
     timeframes: list[str],
+    key_prefix: str,
 ) -> None:
-    with st.expander("Mobile Schnellansicht", expanded=True):
+    with st.expander(f"Mobile Schnellansicht ({key_prefix})", expanded=True):
         st.caption("Watchlist zuerst, Chart direkt darunter. Tabellen bleiben in Details.")
-        render_timeframe_buttons(timeframes, "mobile_timeframe", "mobile")
-        timeframe = st.session_state.get("mobile_timeframe", timeframes[0])
+        timeframe_state_key = make_key(key_prefix, "timeframe")
+        ticker_state_key = make_key(key_prefix, "ticker")
+        render_timeframe_buttons(timeframes, timeframe_state_key, make_key(key_prefix, "timeframe_buttons"))
+        timeframe = st.session_state.get(timeframe_state_key, timeframes[0])
 
         candidates = today_candidates(result, timeframe)
         watchlist = result.get("watchlist", pd.DataFrame())
@@ -577,25 +617,38 @@ def render_mobile_quick_view(
             return
 
         display = display.sort_values("score", ascending=False).head(8)
-        render_mobile_watchlist_cards(display, timeframe)
+        render_mobile_watchlist_cards(display, timeframe, key_prefix=make_key(key_prefix, "cards"))
 
         tickers = display["ticker"].astype(str).str.upper().tolist()
-        current_ticker = st.session_state.get("mobile_ticker", tickers[0])
+        current_ticker = st.session_state.get(ticker_state_key, tickers[0])
         if current_ticker not in tickers:
             current_ticker = tickers[0]
         selected_ticker = st.selectbox(
             "Chart-Symbol",
             tickers,
             index=safe_index(tickers, current_ticker),
-            key="mobile_ticker",
+            key=ticker_state_key,
         )
 
         row = analysis_row_for_ticker(result, selected_ticker, timeframe)
-        render_workspace_focus_card(row, selected_ticker, timeframe)
-        render_symbol_chart(config, result, selected_ticker, timeframe, store, email)
+        render_workspace_focus_card(
+            row,
+            selected_ticker,
+            timeframe,
+            key_prefix=make_key(key_prefix, "focus_card"),
+        )
+        render_symbol_chart(
+            config,
+            result,
+            selected_ticker,
+            timeframe,
+            store,
+            email,
+            key_prefix=make_key(key_prefix, "chart"),
+        )
 
 
-def render_mobile_watchlist_cards(display: pd.DataFrame, timeframe: str) -> None:
+def render_mobile_watchlist_cards(display: pd.DataFrame, timeframe: str, key_prefix: str) -> None:
     st.markdown("#### Watchlist")
     for index in range(0, len(display), 2):
         columns = st.columns(2)
@@ -615,10 +668,10 @@ def render_mobile_watchlist_cards(display: pd.DataFrame, timeframe: str) -> None
                 render_system_alert_tags(row)
                 if st.button(
                     "Chart",
-                    key=f"mobile-chart-{safe_widget_key(ticker)}-{safe_widget_key(timeframe)}",
+                    key=make_key(key_prefix, "chart", ticker, timeframe),
                     use_container_width=True,
                 ):
-                    st.session_state.mobile_ticker = ticker
+                    st.session_state[make_key(key_prefix, "ticker")] = ticker
                     st.session_state.workspace_ticker = ticker
                     st.session_state.workspace_timeframe = timeframe
                     st.rerun()
@@ -724,27 +777,42 @@ def render_today_overview(
     email: str,
     result: dict,
     timeframes: list[str],
+    key_prefix: str,
 ) -> None:
     st.markdown("### Heute ansehen")
     st.caption("Erst Ampel lesen, dann Kandidaten ansehen. Details bleiben darunter.")
-    render_timeframe_buttons(timeframes, "today_timeframe", "today")
-    timeframe = st.session_state.get("today_timeframe", timeframes[0])
+    timeframe_state_key = make_key(key_prefix, "timeframe")
+    render_timeframe_buttons(timeframes, timeframe_state_key, make_key(key_prefix, "timeframe_buttons"))
+    timeframe = st.session_state.get(timeframe_state_key, timeframes[0])
 
     render_market_traffic_light(result, timeframe)
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("Analysieren", key="today_analyze", type="primary", use_container_width=True):
+        if st.button(
+            "Analysieren",
+            key=make_key(key_prefix, "analyze"),
+            type="primary",
+            use_container_width=True,
+        ):
             _run_update(config, generate_reports=True)
             store.record_event(email, "today_analyze", "", timeframe, "manual")
     with col2:
         selected_focus = st.session_state.get("workspace_ticker") or tracking_symbols(config)[0]
-        if st.button("Beobachten", key="today_observe", use_container_width=True):
+        if st.button(
+            "Beobachten",
+            key=make_key(key_prefix, "observe"),
+            use_container_width=True,
+        ):
             observe_symbol(store, email, selected_focus, note=f"Heute ansehen {timeframe}")
             st.success(f"{selected_focus} wurde beobachtet. Pink markiert den Alert-Datenpunkt.")
             st.rerun()
     with col3:
-        if st.button("Zum Chart", key="today_to_chart", use_container_width=True):
+        if st.button(
+            "Zum Chart",
+            key=make_key(key_prefix, "to_chart"),
+            use_container_width=True,
+        ):
             st.session_state.workspace_timeframe = timeframe
             st.session_state.workspace_focus_mode = "Chart"
             st.rerun()
@@ -758,7 +826,7 @@ def render_today_overview(
         return
 
     st.markdown("#### Kandidaten")
-    render_today_cards(candidates.head(6), store, email, timeframe)
+    render_today_cards(candidates.head(6), store, email, timeframe, key_prefix=make_key(key_prefix, "cards"))
 
 
 def render_market_traffic_light(result: dict, timeframe: str) -> None:
@@ -872,6 +940,7 @@ def render_today_cards(
     store: WorkspaceStore,
     email: str,
     timeframe: str,
+    key_prefix: str,
 ) -> None:
     columns = st.columns(3)
     for index, (_, row) in enumerate(candidates.iterrows()):
@@ -888,7 +957,7 @@ def render_today_cards(
             with col_a:
                 if st.button(
                     "Ansehen",
-                    key=f"today-view-{safe_widget_key(ticker)}-{safe_widget_key(timeframe)}",
+                    key=make_key(key_prefix, "view", index, ticker, timeframe),
                     use_container_width=True,
                 ):
                     st.session_state.workspace_ticker = ticker
@@ -898,7 +967,7 @@ def render_today_cards(
             with col_b:
                 if st.button(
                     "Beobachten",
-                    key=f"today-watch-{safe_widget_key(ticker)}-{safe_widget_key(timeframe)}",
+                    key=make_key(key_prefix, "watch", index, ticker, timeframe),
                     use_container_width=True,
                 ):
                     observe_symbol(store, email, ticker, note=f"Heute ansehen {timeframe}")
@@ -962,7 +1031,7 @@ def apply_selected_topic(selected_topic: dict) -> None:
     st.session_state.workspace_applied_topic = topic_id
 
 
-def render_saved_topics_picker(store: WorkspaceStore, email: str) -> dict:
+def render_saved_topics_picker(store: WorkspaceStore, email: str, key_prefix: str) -> dict:
     topics = store.list_topics(email)
     if topics.empty:
         render_empty_state(
@@ -979,21 +1048,25 @@ def render_saved_topics_picker(store: WorkspaceStore, email: str) -> dict:
         "Gespeicherte Themen",
         [""] + topics["id"].tolist(),
         format_func=lambda value: "Auswahl" if value == "" else labels.get(value, value),
-        key="workspace_saved_topic",
+        key=make_key(key_prefix, "select"),
     )
     if not selected_id:
         return {}
 
     store.mark_opened(email, selected_id)
     selected = topics[topics["id"] == selected_id].iloc[0].to_dict()
-    if st.button("Thema loeschen", key=f"delete-topic-{selected_id}", use_container_width=True):
+    if st.button(
+        "Thema loeschen",
+        key=make_key(key_prefix, "delete", selected_id),
+        use_container_width=True,
+    ):
         store.delete_topic(email, selected_id)
         st.success("Thema geloescht.")
         st.rerun()
     return selected
 
 
-def render_quick_symbol_buttons(symbols: list[str]) -> None:
+def render_quick_symbol_buttons(symbols: list[str], key_prefix: str) -> None:
     st.caption("Schnellwechsel")
     quick_symbols = symbols[:8]
     columns = st.columns(4)
@@ -1001,7 +1074,7 @@ def render_quick_symbol_buttons(symbols: list[str]) -> None:
         with columns[index % 4]:
             if st.button(
                 symbol,
-                key=f"quick-symbol-{safe_widget_key(symbol)}",
+                key=make_key(key_prefix, index, symbol),
                 use_container_width=True,
             ):
                 st.session_state.workspace_ticker = symbol
@@ -1016,7 +1089,7 @@ def render_timeframe_buttons(timeframes: list[str], state_key: str, key_prefix: 
         with columns[index % len(columns)]:
             if st.button(
                 timeframe,
-                key=f"{key_prefix}-timeframe-{safe_widget_key(timeframe)}",
+                key=make_key(key_prefix, "timeframe", index, timeframe),
                 type="primary" if timeframe == current else "secondary",
                 use_container_width=True,
             ):
@@ -1030,19 +1103,41 @@ def render_save_topic_form(
     email: str,
     ticker: str,
     timeframe: str,
+    key_prefix: str,
 ) -> None:
     categories = config.get("workspace", {}).get("categories", DEFAULT_CATEGORIES)
-    with st.expander("Speichern", expanded=False):
+    with st.expander(f"Speichern ({key_prefix})", expanded=False):
         render_system_alert_panel(
             "Pink Alert: Speicherung",
             "Alles, was fuer spaetere System-Erkennung, Beobachtung oder Bot-Vorbereitung gespeichert wird, ist pink markiert.",
         )
-        with st.form("save_workspace_topic", clear_on_submit=True):
-            name = st.text_input("Name", value=f"{ticker} {timeframe}")
-            category = st.selectbox("Kategorie", categories, index=safe_index(categories, "Research"))
-            note = st.text_area("Notiz", placeholder="Worauf willst du spaeter schnell zugreifen?")
-            pinned = st.checkbox("Oben halten", value=True)
-            if st.form_submit_button("Speichern", use_container_width=True):
+        with st.form(make_key(key_prefix, "form"), clear_on_submit=True):
+            name = st.text_input(
+                "Name",
+                value=f"{ticker} {timeframe}",
+                key=make_key(key_prefix, "name"),
+            )
+            category = st.selectbox(
+                "Kategorie",
+                categories,
+                index=safe_index(categories, "Research"),
+                key=make_key(key_prefix, "category"),
+            )
+            note = st.text_area(
+                "Notiz",
+                placeholder="Worauf willst du spaeter schnell zugreifen?",
+                key=make_key(key_prefix, "note"),
+            )
+            pinned = st.checkbox(
+                "Oben halten",
+                value=True,
+                key=make_key(key_prefix, "pinned"),
+            )
+            if st.form_submit_button(
+                "Speichern",
+                key=make_key(key_prefix, "submit"),
+                use_container_width=True,
+            ):
                 try:
                     topic_id = store.save_topic(
                         email=email,
@@ -1069,7 +1164,7 @@ def render_custom_watchlists(
     compact: bool = False,
 ) -> None:
     if compact:
-        with st.expander("Eigene Watchlists", expanded=False):
+        with st.expander(f"Eigene Watchlists ({key_prefix})", expanded=False):
             render_custom_watchlists_body(config, store, email, result, key_prefix, compact)
     else:
         render_custom_watchlists_body(config, store, email, result, key_prefix, compact)
@@ -1103,7 +1198,7 @@ def render_custom_watchlists_body(
         "Watchlist",
         watchlists["id"].tolist(),
         format_func=lambda value: labels.get(value, value),
-        key=f"{key_prefix}_custom_watchlist_select",
+        key=make_key(key_prefix, "custom_watchlist_select"),
     )
     selected_watchlist = watchlists[watchlists["id"] == selected_watchlist_id].iloc[0].to_dict()
 
@@ -1113,13 +1208,13 @@ def render_custom_watchlists_body(
             "Analyse-Timeframe",
             timeframes,
             index=safe_index(timeframes, st.session_state.get("workspace_timeframe", timeframes[0])),
-            key=f"{key_prefix}_custom_watchlist_timeframe",
+            key=make_key(key_prefix, "custom_watchlist_timeframe"),
         )
     with col_b:
         sort_mode = st.selectbox(
             "Sortierung",
             ["Risk State", "Score hoch", "Trend", "Favoriten/Pins"],
-            key=f"{key_prefix}_custom_watchlist_sort",
+            key=make_key(key_prefix, "custom_watchlist_sort"),
         )
 
     render_create_watchlist_form(store, email, categories, key_prefix, collapsed=not compact)
@@ -1137,6 +1232,7 @@ def render_custom_watchlists_body(
             display,
             use_container_width=True,
             hide_index=True,
+            key=make_key(key_prefix, "custom_watchlist_dataframe"),
             column_config={
                 "pin": "Pin",
                 "ticker": "Ticker",
@@ -1159,7 +1255,7 @@ def render_custom_watchlists_body(
                 with columns[index % len(columns)]:
                     if st.button(
                         symbol,
-                        key=f"{key_prefix}-custom-focus-{safe_widget_key(symbol)}",
+                        key=make_key(key_prefix, "custom_focus", index, symbol),
                         use_container_width=True,
                     ):
                         st.session_state.workspace_ticker = symbol
@@ -1168,7 +1264,7 @@ def render_custom_watchlists_body(
 
         if st.button(
             "Analysieren",
-            key=f"{key_prefix}_analyze_custom_watchlist",
+            key=make_key(key_prefix, "analyze_custom_watchlist"),
             type="primary",
             use_container_width=True,
         ):
@@ -1183,7 +1279,7 @@ def render_custom_watchlists_body(
         )
         if st.button(
             "Ausgewaehlte Watchlist loeschen",
-            key=f"{key_prefix}_delete_watchlist",
+            key=make_key(key_prefix, "delete_watchlist"),
             use_container_width=True,
         ):
             store.delete_watchlist(email, selected_watchlist_id)
@@ -1199,7 +1295,7 @@ def render_create_watchlist_form(
     collapsed: bool = True,
 ) -> None:
     if collapsed:
-        with st.expander("Neue Watchlist", expanded=False):
+        with st.expander(f"Neue Watchlist ({key_prefix})", expanded=False):
             render_alert_badge("Pink Alert: Speicherung")
             render_create_watchlist_fields(store, email, categories, key_prefix)
     else:
@@ -1214,24 +1310,28 @@ def render_create_watchlist_fields(
     categories: list[str],
     key_prefix: str,
 ) -> None:
-    with st.form(f"{key_prefix}_create_watchlist_form", clear_on_submit=True):
+    with st.form(make_key(key_prefix, "create_watchlist_form"), clear_on_submit=True):
         name = st.text_input(
             "Name",
             placeholder="z.B. Breakout Ideen",
-            key=f"{key_prefix}_create_watchlist_name",
+            key=make_key(key_prefix, "create_watchlist_name"),
         )
         category = st.selectbox(
             "Kategorie",
             categories,
             index=safe_index(categories, "Eigene Ideen"),
-            key=f"{key_prefix}_create_watchlist_category",
+            key=make_key(key_prefix, "create_watchlist_category"),
         )
         pinned = st.checkbox(
             "Oben halten",
             value=True,
-            key=f"{key_prefix}_create_watchlist_pinned",
+            key=make_key(key_prefix, "create_watchlist_pinned"),
         )
-        if st.form_submit_button("Watchlist anlegen", use_container_width=True):
+        if st.form_submit_button(
+            "Watchlist anlegen",
+            key=make_key(key_prefix, "create_watchlist_submit"),
+            use_container_width=True,
+        ):
             try:
                 store.save_watchlist(email, name, category, pinned)
                 st.success("Watchlist angelegt.")
@@ -1248,11 +1348,11 @@ def render_add_symbol_form(
     key_prefix: str,
 ) -> None:
     render_alert_badge("Pink Alert: Beobachten")
-    with st.form(f"{key_prefix}_add_watchlist_symbol_form", clear_on_submit=True):
+    with st.form(make_key(key_prefix, "add_watchlist_symbol_form"), clear_on_submit=True):
         symbol = st.text_input(
             "Symbol hinzufuegen",
             placeholder="z.B. BTC-USD",
-            key=f"{key_prefix}_add_symbol_ticker",
+            key=make_key(key_prefix, "add_symbol_ticker"),
         )
         col1, col2 = st.columns(2)
         with col1:
@@ -1260,16 +1360,24 @@ def render_add_symbol_form(
                 "Kategorie",
                 categories,
                 index=safe_index(categories, "Eigene Ideen"),
-                key=f"{key_prefix}_add_symbol_category",
+                key=make_key(key_prefix, "add_symbol_category"),
             )
         with col2:
-            pinned = st.checkbox("Pin", value=False, key=f"{key_prefix}_add_symbol_pinned")
+            pinned = st.checkbox(
+                "Pin",
+                value=False,
+                key=make_key(key_prefix, "add_symbol_pinned"),
+            )
         note = st.text_input(
             "Notiz optional",
             placeholder="Warum ist das Symbol interessant?",
-            key=f"{key_prefix}_add_symbol_note",
+            key=make_key(key_prefix, "add_symbol_note"),
         )
-        if st.form_submit_button("Beobachten", use_container_width=True):
+        if st.form_submit_button(
+            "Beobachten",
+            key=make_key(key_prefix, "add_symbol_submit"),
+            use_container_width=True,
+        ):
             try:
                 symbol_id = store.add_watchlist_symbol(
                     email=email,
@@ -1294,7 +1402,7 @@ def render_delete_symbol_control(
     collapsed: bool = True,
 ) -> None:
     if collapsed:
-        with st.expander("Symbol entfernen", expanded=False):
+        with st.expander(f"Symbol entfernen ({key_prefix})", expanded=False):
             render_delete_symbol_fields(store, email, symbols_df, key_prefix)
     else:
         render_delete_symbol_fields(store, email, symbols_df, key_prefix)
@@ -1314,11 +1422,11 @@ def render_delete_symbol_fields(
         "Symbol entfernen",
         symbols_df["id"].tolist(),
         format_func=lambda value: labels.get(value, value),
-        key=f"{key_prefix}_delete_symbol_select",
+        key=make_key(key_prefix, "delete_symbol_select"),
     )
     if st.button(
         "Symbol entfernen",
-        key=f"{key_prefix}_delete_symbol_button",
+        key=make_key(key_prefix, "delete_symbol_button"),
         use_container_width=True,
     ):
         store.delete_watchlist_symbol(email, selected_symbol_id)
@@ -1373,7 +1481,7 @@ def build_custom_watchlist_display(
     return display.drop(columns=["_pinned_sort", "_score_sort", "_risk_sort", "_trend_sort"])
 
 
-def render_workspace_focus_card(row: dict, ticker: str, timeframe: str) -> None:
+def render_workspace_focus_card(row: dict, ticker: str, timeframe: str, key_prefix: str) -> None:
     st.markdown("### Schnellblick")
     if not row:
         st.warning("Keine Analyse fuer diesen Fokus vorhanden.")
@@ -1398,7 +1506,12 @@ def render_workspace_focus_card(row: dict, ticker: str, timeframe: str) -> None:
             }
         ]
     )
-    st.dataframe(compact, use_container_width=True, hide_index=True)
+    st.dataframe(
+        compact,
+        use_container_width=True,
+        hide_index=True,
+        key=make_key(key_prefix, "dataframe", ticker, timeframe),
+    )
 
 
 def render_symbol_chart(
@@ -1408,6 +1521,7 @@ def render_symbol_chart(
     timeframe: str,
     store: Optional[WorkspaceStore] = None,
     email: str = "local",
+    key_prefix: str = "chart",
 ) -> None:
     history = chart_history(config, result, ticker, timeframe)
     if history.empty:
@@ -1509,6 +1623,7 @@ def render_symbol_chart(
     st.plotly_chart(
         fig,
         use_container_width=True,
+        key=make_key(key_prefix, "plotly", ticker, timeframe),
         config={
             "scrollZoom": True,
             "displaylogo": False,
@@ -1519,7 +1634,15 @@ def render_symbol_chart(
     st.caption(
         "Zoom mit Mausrad, Pan ueber Ziehen. Pink markiert System-/Alert-Linien und gespeicherte Erkennungspunkte."
     )
-    render_chart_line_tools(store, email, ticker, timeframe, history, chart_lines)
+    render_chart_line_tools(
+        store,
+        email,
+        ticker,
+        timeframe,
+        history,
+        chart_lines,
+        key_prefix=make_key(key_prefix, "lines"),
+    )
 
 
 def add_chart_line_traces(fig, chart_lines: pd.DataFrame) -> None:
@@ -1553,11 +1676,12 @@ def render_chart_line_tools(
     timeframe: str,
     history: pd.DataFrame,
     chart_lines: pd.DataFrame,
+    key_prefix: str,
 ) -> None:
     if store is None:
         return
 
-    safe_key = safe_widget_key(f"{ticker}-{timeframe}")
+    safe_key = make_key(key_prefix, ticker, timeframe)
     last_row = history.iloc[-1]
     start_row = history.iloc[max(0, len(history) - 30)]
     default_start_date = pd.to_datetime(start_row["date"]).date()
@@ -1565,34 +1689,64 @@ def render_chart_line_tools(
     default_start_price = float(start_row["close"])
     default_end_price = float(last_row["close"])
 
-    with st.expander("Linien speichern und verwalten", expanded=False):
+    with st.expander(f"Linien speichern und verwalten ({safe_key})", expanded=False):
         render_system_alert_panel(
             "Pink Alert: Linien",
             "Gespeicherte Linien sind Alert- und Erkennungspunkte. Sie markieren keine Order und keine Ausfuehrung.",
         )
-        with st.form(f"chart_line_form_{safe_key}", clear_on_submit=True):
+        with st.form(make_key(safe_key, "chart_line_form"), clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
-                name = st.text_input("Name", value=f"{ticker} Linie")
-                start_date = st.date_input("Startdatum", value=default_start_date)
+                name = st.text_input(
+                    "Name",
+                    value=f"{ticker} Linie",
+                    key=make_key(safe_key, "line_name"),
+                )
+                start_date = st.date_input(
+                    "Startdatum",
+                    value=default_start_date,
+                    key=make_key(safe_key, "start_date"),
+                )
                 start_price = st.number_input(
                     "Startpreis",
                     min_value=0.01,
                     value=max(default_start_price, 0.01),
                     step=0.01,
+                    key=make_key(safe_key, "start_price"),
                 )
             with col2:
-                color = st.color_picker("Farbe", value=SYSTEM_ALERT_COLOR)
-                end_date = st.date_input("Enddatum", value=default_end_date)
+                color = st.color_picker(
+                    "Farbe",
+                    value=SYSTEM_ALERT_COLOR,
+                    key=make_key(safe_key, "color"),
+                )
+                end_date = st.date_input(
+                    "Enddatum",
+                    value=default_end_date,
+                    key=make_key(safe_key, "end_date"),
+                )
                 end_price = st.number_input(
                     "Endpreis",
                     min_value=0.01,
                     value=max(default_end_price, 0.01),
                     step=0.01,
+                    key=make_key(safe_key, "end_price"),
                 )
-            note = st.text_input("Notiz optional", placeholder="z.B. Widerstand oder Trendlinie")
-            pinned = st.checkbox("Linie oben halten", value=True)
-            submitted = st.form_submit_button("Linie speichern", use_container_width=True)
+            note = st.text_input(
+                "Notiz optional",
+                placeholder="z.B. Widerstand oder Trendlinie",
+                key=make_key(safe_key, "note"),
+            )
+            pinned = st.checkbox(
+                "Linie oben halten",
+                value=True,
+                key=make_key(safe_key, "pinned"),
+            )
+            submitted = st.form_submit_button(
+                "Linie speichern",
+                key=make_key(safe_key, "submit"),
+                use_container_width=True,
+            )
             if submitted:
                 if pd.Timestamp(start_date) > pd.Timestamp(end_date):
                     st.error("Startdatum muss vor dem Enddatum liegen.")
@@ -1639,6 +1793,7 @@ def render_chart_line_tools(
             display,
             use_container_width=True,
             hide_index=True,
+            key=make_key(safe_key, "chart_lines_dataframe"),
             column_config={
                 "start_price": st.column_config.NumberColumn("Startpreis", format="%.2f"),
                 "end_price": st.column_config.NumberColumn("Endpreis", format="%.2f"),
@@ -1653,9 +1808,12 @@ def render_chart_line_tools(
             "Linie loeschen",
             chart_lines["id"].tolist(),
             format_func=lambda value: labels.get(value, value),
-            key=f"delete_chart_line_{safe_key}",
+            key=make_key(safe_key, "delete_select"),
         )
-        if st.button("Ausgewaehlte Linie loeschen", key=f"delete_chart_line_btn_{safe_key}"):
+        if st.button(
+            "Ausgewaehlte Linie loeschen",
+            key=make_key(safe_key, "delete_button"),
+        ):
             store.delete_chart_line(email, selected_line_id)
             st.success("Linie geloescht.")
             st.rerun()
@@ -1716,7 +1874,12 @@ def chart_point_limit(timeframe: str) -> int:
     return 420
 
 
-def render_collection_overview(config: dict, store: WorkspaceStore, email: str) -> None:
+def render_collection_overview(
+    config: dict,
+    store: WorkspaceStore,
+    email: str,
+    key_prefix: str,
+) -> None:
     st.markdown("### Gesammelte Daten")
     topics = store.list_topics(email)
     custom_symbols = store.list_watchlist_symbols(email)
@@ -1730,6 +1893,7 @@ def render_collection_overview(config: dict, store: WorkspaceStore, email: str) 
             events[["event_type", "ticker", "timeframe", "detail", "created_at"]],
             use_container_width=True,
             hide_index=True,
+            key=make_key(key_prefix, "events_dataframe"),
         )
     else:
         render_empty_state(
@@ -1738,7 +1902,7 @@ def render_collection_overview(config: dict, store: WorkspaceStore, email: str) 
         )
 
 
-def render_watchlist(config: dict) -> None:
+def render_watchlist(config: dict, key_prefix: str) -> None:
     result = st.session_state.analysis_result
     watchlist = result["watchlist"]
     store = _workspace_store(config)
@@ -1749,13 +1913,13 @@ def render_watchlist(config: dict) -> None:
     st.caption(f"Relative Staerke gegen {config.get('benchmark', 'QQQ')}")
     render_timeframe_buttons(
         config["data"].get("timeframes", ["1d", "1wk", "1mo"]),
-        "watchlist_timeframe",
-        "watchlist",
+        make_key(key_prefix, "timeframe"),
+        make_key(key_prefix, "timeframe_buttons"),
     )
     timeframe = st.selectbox(
         "Timeframe",
         config["data"].get("timeframes", ["1d", "1wk", "1mo"]),
-        key="watchlist_timeframe",
+        key=make_key(key_prefix, "timeframe"),
     )
     filtered = watchlist[watchlist["timeframe"] == timeframe]
     if filtered.empty:
@@ -1770,12 +1934,17 @@ def render_watchlist(config: dict) -> None:
             store,
             email,
             timeframe,
+            key_prefix=make_key(key_prefix, "quick_cards"),
         )
-        with st.expander("Tabelle anzeigen", expanded=False):
-            render_analysis_table(filtered)
-        with st.expander("Charts anzeigen", expanded=False):
-            render_score_chart(filtered, f"Mag7 Scores {timeframe}")
-            render_relative_strength_chart(filtered)
+        with st.expander(f"Tabelle anzeigen ({key_prefix})", expanded=False):
+            render_analysis_table(filtered, key_prefix=make_key(key_prefix, "analysis_table"))
+        with st.expander(f"Charts anzeigen ({key_prefix})", expanded=False):
+            render_score_chart(
+                filtered,
+                f"Mag7 Scores {timeframe}",
+                key_prefix=make_key(key_prefix, "score_chart"),
+            )
+            render_relative_strength_chart(filtered, key_prefix=make_key(key_prefix, "relative_strength_chart"))
     st.divider()
     st.markdown("### Eigene Watchlists")
     render_custom_watchlists(
@@ -1788,7 +1957,7 @@ def render_watchlist(config: dict) -> None:
     )
 
 
-def render_papertrading(config: dict) -> None:
+def render_papertrading(config: dict, key_prefix: str) -> None:
     render_tracking_area(
         config=config,
         account_type="papertrading",
@@ -1797,10 +1966,11 @@ def render_papertrading(config: dict) -> None:
             "Simuliertes Analyse-Journal. Paper laeuft parallel mit und speichert "
             "bei jeder Analyse Snapshots deiner offenen Eintraege."
         ),
+        key_prefix=key_prefix,
     )
 
 
-def render_real_money(config: dict) -> None:
+def render_real_money(config: dict, key_prefix: str) -> None:
     render_tracking_area(
         config=config,
         account_type="real_money",
@@ -1809,10 +1979,17 @@ def render_real_money(config: dict) -> None:
             "Manuelles Spiegel-Depot fuer echte Positionen. Keine Orders, keine "
             "Broker-Anbindung, keine automatische Ausfuehrung."
         ),
+        key_prefix=key_prefix,
     )
 
 
-def render_tracking_area(config: dict, account_type: str, title: str, description: str) -> None:
+def render_tracking_area(
+    config: dict,
+    account_type: str,
+    title: str,
+    description: str,
+    key_prefix: str,
+) -> None:
     tracker = _tracker(config)
 
     st.subheader(title)
@@ -1824,14 +2001,19 @@ def render_tracking_area(config: dict, account_type: str, title: str, descriptio
         st.success(notice)
 
     render_tracking_metrics(tracker, account_type)
-    render_tracking_performance(tracker, account_type, expanded=False)
-    with st.expander("Eintrag erfassen", expanded=False):
-        render_tracking_entry_form(config, tracker, account_type)
-    with st.expander("Eintrag schliessen", expanded=False):
-        render_tracking_close_form(config, tracker, account_type)
-    with st.expander("Journal anzeigen", expanded=False):
-        render_tracking_history(tracker, account_type)
-    render_paper_real_comparison(tracker)
+    render_tracking_performance(
+        tracker,
+        account_type,
+        expanded=False,
+        key_prefix=make_key(key_prefix, "performance"),
+    )
+    with st.expander(f"Eintrag erfassen ({key_prefix})", expanded=False):
+        render_tracking_entry_form(config, tracker, account_type, key_prefix=make_key(key_prefix, "entry"))
+    with st.expander(f"Eintrag schliessen ({key_prefix})", expanded=False):
+        render_tracking_close_form(config, tracker, account_type, key_prefix=make_key(key_prefix, "close"))
+    with st.expander(f"Journal anzeigen ({key_prefix})", expanded=False):
+        render_tracking_history(tracker, account_type, key_prefix=make_key(key_prefix, "history"))
+    render_paper_real_comparison(tracker, key_prefix=make_key(key_prefix, "comparison"))
 
 
 def render_tracking_metrics(tracker: PortfolioTracker, account_type: str) -> None:
@@ -1854,17 +2036,34 @@ def render_tracking_performance(
     tracker: PortfolioTracker,
     account_type: str,
     expanded: bool = False,
+    key_prefix: str = "tracking_performance",
 ) -> None:
-    with st.expander("Performance auswerten", expanded=expanded):
-        render_tracking_equity_curve(tracker, account_type)
+    with st.expander(f"Performance auswerten ({key_prefix})", expanded=expanded):
+        render_tracking_equity_curve(
+            tracker,
+            account_type,
+            key_prefix=make_key(key_prefix, "equity_curve"),
+        )
         col1, col2 = st.columns(2)
         with col1:
-            render_tracking_setup_breakdown(tracker, account_type)
+            render_tracking_setup_breakdown(
+                tracker,
+                account_type,
+                key_prefix=make_key(key_prefix, "setup_breakdown"),
+            )
         with col2:
-            render_tracking_rule_violations(tracker, account_type)
+            render_tracking_rule_violations(
+                tracker,
+                account_type,
+                key_prefix=make_key(key_prefix, "rule_violations"),
+            )
 
 
-def render_tracking_equity_curve(tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_equity_curve(
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     curve = tracker.equity_curve(account_type)
     if curve.empty:
         render_empty_state(
@@ -1889,10 +2088,14 @@ def render_tracking_equity_curve(tracker: PortfolioTracker, account_type: str) -
         opacity=0.35,
     )
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=45, b=10), hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=make_key(key_prefix, "plotly", account_type))
 
 
-def render_tracking_setup_breakdown(tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_setup_breakdown(
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     st.markdown("#### Setup-Kategorien")
     breakdown = tracker.setup_breakdown(account_type)
     if breakdown.empty:
@@ -1905,6 +2108,7 @@ def render_tracking_setup_breakdown(tracker: PortfolioTracker, account_type: str
         breakdown,
         use_container_width=True,
         hide_index=True,
+        key=make_key(key_prefix, "dataframe", account_type),
         column_config={
             "setup_category": "Setup",
             "entries": "Eintraege",
@@ -1916,7 +2120,11 @@ def render_tracking_setup_breakdown(tracker: PortfolioTracker, account_type: str
     )
 
 
-def render_tracking_rule_violations(tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_rule_violations(
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     st.markdown("#### Regelverletzungen")
     violations = tracker.rule_violation_breakdown(account_type)
     if violations.empty:
@@ -1929,6 +2137,7 @@ def render_tracking_rule_violations(tracker: PortfolioTracker, account_type: str
         violations,
         use_container_width=True,
         hide_index=True,
+        key=make_key(key_prefix, "dataframe", account_type),
         column_config={
             "rule_violation": "Regelverletzung",
             "entries": "Vorkommen",
@@ -1938,7 +2147,12 @@ def render_tracking_rule_violations(tracker: PortfolioTracker, account_type: str
     )
 
 
-def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_entry_form(
+    config: dict,
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     result = st.session_state.analysis_result
     symbols = tracking_symbols(config)
     timeframes = config["data"].get("timeframes", ["1d", "1wk", "1mo"])
@@ -1948,26 +2162,30 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
     st.markdown("### Neuen Eintrag erfassen")
     col1, col2 = st.columns(2)
     with col1:
-        ticker = st.selectbox("Ticker", symbols, key=f"{account_type}_entry_ticker")
+        ticker = st.selectbox(
+            "Ticker",
+            symbols,
+            key=make_key(key_prefix, "ticker"),
+        )
     with col2:
         timeframe = st.selectbox(
             "Analyse-Timeframe",
             timeframes,
-            key=f"{account_type}_entry_timeframe",
+            key=make_key(key_prefix, "timeframe"),
         )
 
     analysis_row = analysis_row_for_ticker(result, ticker, timeframe)
     default_price = safe_float(analysis_row.get("close"), fallback=1.0)
     render_tracking_analysis_snapshot(analysis_row)
 
-    with st.form(f"{account_type}_entry_form", clear_on_submit=True):
+    with st.form(make_key(key_prefix, "form"), clear_on_submit=True):
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             direction = st.selectbox(
                 "Richtung",
                 ["long", "short"],
                 format_func=lambda value: value.upper(),
-                key=f"{account_type}_direction",
+                key=make_key(key_prefix, "direction"),
             )
         with col_b:
             quantity = st.number_input(
@@ -1975,7 +2193,7 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 min_value=0.0001,
                 value=float(config.get("tracking", {}).get("default_quantity", 1.0)),
                 step=1.0,
-                key=f"{account_type}_quantity",
+                key=make_key(key_prefix, "quantity"),
             )
         with col_c:
             entry_price = st.number_input(
@@ -1983,7 +2201,7 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 min_value=0.01,
                 value=max(default_price, 0.01),
                 step=0.01,
-                key=f"{account_type}_{ticker}_{timeframe}_entry_price",
+                key=make_key(key_prefix, "entry_price", ticker, timeframe),
             )
 
         col_d, col_e, col_f = st.columns(3)
@@ -1991,7 +2209,7 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
             entry_date = st.date_input(
                 "Datum",
                 value=pd.Timestamp.today().date(),
-                key=f"{account_type}_entry_date",
+                key=make_key(key_prefix, "entry_date"),
             )
         with col_e:
             stop_price = st.number_input(
@@ -1999,7 +2217,7 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 min_value=0.0,
                 value=0.0,
                 step=0.01,
-                key=f"{account_type}_stop_price",
+                key=make_key(key_prefix, "stop_price"),
             )
         with col_f:
             target_price = st.number_input(
@@ -2007,7 +2225,7 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 min_value=0.0,
                 value=0.0,
                 step=0.01,
-                key=f"{account_type}_target_price",
+                key=make_key(key_prefix, "target_price"),
             )
 
         col_g, col_h = st.columns(2)
@@ -2016,22 +2234,26 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 "Setup-Kategorie",
                 setup_categories,
                 index=safe_index(setup_categories, "Trendfolge"),
-                key=f"{account_type}_setup_category",
+                key=make_key(key_prefix, "setup_category"),
             )
         with col_h:
             rule_violations = st.multiselect(
                 "Regelverletzungen",
                 rule_options,
-                key=f"{account_type}_rule_violations",
+                key=make_key(key_prefix, "rule_violations"),
                 help="Nur markieren, wenn der Eintrag bewusst gegen eine harte Regel laeuft.",
             )
 
         thesis = st.text_area(
             "Notiz / These",
-            key=f"{account_type}_thesis",
+            key=make_key(key_prefix, "thesis"),
             placeholder="Warum wird dieser Eintrag beobachtet?",
         )
-        submitted = st.form_submit_button("Eintrag speichern", use_container_width=True)
+        submitted = st.form_submit_button(
+            "Eintrag speichern",
+            key=make_key(key_prefix, "submit"),
+            use_container_width=True,
+        )
         if submitted:
             try:
                 entry_id = tracker.add_entry(
@@ -2059,7 +2281,12 @@ def render_tracking_entry_form(config: dict, tracker: PortfolioTracker, account_
                 st.error(f"Eintrag konnte nicht gespeichert werden: {exc}")
 
 
-def render_tracking_close_form(config: dict, tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_close_form(
+    config: dict,
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     entries = tracker.enriched_entries(account_type)
     open_entries = entries[entries["status"] == "open"].copy() if not entries.empty else entries
     if open_entries.empty:
@@ -2080,7 +2307,7 @@ def render_tracking_close_form(config: dict, tracker: PortfolioTracker, account_
         "Eintrag waehlen",
         options,
         format_func=lambda value: labels.get(value, value),
-        key=f"{account_type}_close_select",
+        key=make_key(key_prefix, "select"),
     )
     selected = open_entries[open_entries["id"] == selected_id].iloc[0]
     analysis_row = analysis_row_for_ticker(
@@ -2093,7 +2320,7 @@ def render_tracking_close_form(config: dict, tracker: PortfolioTracker, account_
         fallback=safe_float(analysis_row.get("close"), fallback=float(selected["entry_price"])),
     )
 
-    with st.form(f"{account_type}_close_form"):
+    with st.form(make_key(key_prefix, "form")):
         col1, col2 = st.columns(2)
         with col1:
             exit_price = st.number_input(
@@ -2101,16 +2328,23 @@ def render_tracking_close_form(config: dict, tracker: PortfolioTracker, account_
                 min_value=0.01,
                 value=max(default_exit, 0.01),
                 step=0.01,
-                key=f"{account_type}_{selected_id}_exit_price",
+                key=make_key(key_prefix, "exit_price", selected_id),
             )
         with col2:
             exit_date = st.date_input(
                 "Schlussdatum",
                 value=pd.Timestamp.today().date(),
-                key=f"{account_type}_{selected_id}_exit_date",
+                key=make_key(key_prefix, "exit_date", selected_id),
             )
-        exit_note = st.text_area("Schlussnotiz", key=f"{account_type}_{selected_id}_exit_note")
-        submitted = st.form_submit_button("Schliessung speichern", use_container_width=True)
+        exit_note = st.text_area(
+            "Schlussnotiz",
+            key=make_key(key_prefix, "exit_note", selected_id),
+        )
+        submitted = st.form_submit_button(
+            "Schliessung speichern",
+            key=make_key(key_prefix, "submit", selected_id),
+            use_container_width=True,
+        )
         if submitted:
             try:
                 tracker.close_entry(selected_id, exit_price, exit_date, exit_note)
@@ -2124,7 +2358,11 @@ def render_tracking_close_form(config: dict, tracker: PortfolioTracker, account_
                 st.error(f"Eintrag konnte nicht geschlossen werden: {exc}")
 
 
-def render_tracking_history(tracker: PortfolioTracker, account_type: str) -> None:
+def render_tracking_history(
+    tracker: PortfolioTracker,
+    account_type: str,
+    key_prefix: str,
+) -> None:
     st.markdown("### Journal und Daten")
     entries = tracker.enriched_entries(account_type)
     if entries.empty:
@@ -2139,6 +2377,7 @@ def render_tracking_history(tracker: PortfolioTracker, account_type: str) -> Non
         display,
         use_container_width=True,
         hide_index=True,
+        key=make_key(key_prefix, "entries_dataframe", account_type),
         column_config={
             "id_short": "ID",
             "status": "Status",
@@ -2174,7 +2413,11 @@ def render_tracking_history(tracker: PortfolioTracker, account_type: str) -> Non
             title="Snapshot-Verlauf offener Eintraege",
         )
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=45, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=make_key(key_prefix, "snapshot_plotly", account_type),
+        )
 
     csv_data = entries.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -2182,20 +2425,20 @@ def render_tracking_history(tracker: PortfolioTracker, account_type: str) -> Non
         data=csv_data,
         file_name=f"{account_type}_journal.csv",
         mime="text/csv",
-        key=f"{account_type}_download",
+        key=make_key(key_prefix, "download", account_type),
         use_container_width=True,
     )
     if st.button(
         "CSV Export in reports/ aktualisieren",
-        key=f"{account_type}_export_report",
+        key=make_key(key_prefix, "export_report", account_type),
         use_container_width=True,
     ):
         path = tracker.export_journal(account_type, BASE_DIR / "reports")
         st.success(f"Export aktualisiert: {path.name}")
 
 
-def render_paper_real_comparison(tracker: PortfolioTracker) -> None:
-    with st.expander("Paper vs Real vergleichen", expanded=False):
+def render_paper_real_comparison(tracker: PortfolioTracker, key_prefix: str) -> None:
+    with st.expander(f"Paper vs Real vergleichen ({key_prefix})", expanded=False):
         comparison = tracker.account_comparison()
         if comparison.empty:
             render_empty_state(
@@ -2207,6 +2450,7 @@ def render_paper_real_comparison(tracker: PortfolioTracker) -> None:
             comparison,
             use_container_width=True,
             hide_index=True,
+            key=make_key(key_prefix, "dataframe"),
             column_config={
                 "account_type": "Bereich",
                 "open_count": "Offen",
@@ -2228,18 +2472,27 @@ def render_paper_real_comparison(tracker: PortfolioTracker) -> None:
             title="Paper vs Real P/L und Drawdown",
         )
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=45, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=make_key(key_prefix, "plotly"))
 
 
-def render_reports(config: dict) -> None:
+def render_reports(config: dict, key_prefix: str) -> None:
     st.subheader("Reports")
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Analysieren", key="reports_analyze", type="primary", use_container_width=True):
+        if st.button(
+            "Analysieren",
+            key=make_key(key_prefix, "analyze"),
+            type="primary",
+            use_container_width=True,
+        ):
             _run_update(config, generate_reports=True)
     with col2:
-        if st.button("Reports aktualisieren", key="reports_refresh", use_container_width=True):
+        if st.button(
+            "Reports aktualisieren",
+            key=make_key(key_prefix, "refresh"),
+            use_container_width=True,
+        ):
             current = st.session_state.get("analysis_result")
             if current:
                 _run_update(config, generate_reports=True)
@@ -2254,7 +2507,7 @@ def render_reports(config: dict) -> None:
         )
         return
 
-    render_report_previews(config, compact=False)
+    render_report_previews(config, compact=False, key_prefix=make_key(key_prefix, "previews"))
 
     st.write("Downloads")
     for path in report_paths:
@@ -2265,11 +2518,11 @@ def render_reports(config: dict) -> None:
             data=data,
             file_name=path.name,
             mime=mime,
-            key=f"download-{path.name}",
+            key=make_key(key_prefix, "download", path.name),
         )
 
 
-def render_updates(config: dict, app_env: str) -> None:
+def render_updates(config: dict, app_env: str, key_prefix: str) -> None:
     st.subheader("Updates")
     version_info = get_current_version(BASE_DIR)
     st.write(f"Aktuelle Version: `{version_info.get('version', '0.1.0')}`")
@@ -2295,11 +2548,19 @@ def render_updates(config: dict, app_env: str) -> None:
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Backup erstellen", use_container_width=True):
+        if st.button(
+            "Backup erstellen",
+            key=make_key(key_prefix, "create_backup"),
+            use_container_width=True,
+        ):
             backup_dir = create_backup(BASE_DIR)
             st.success(f"Backup erstellt: {backup_dir.name}")
     with col2:
-        if st.button("Update-Dateien prüfen", use_container_width=True):
+        if st.button(
+            "Update-Dateien prüfen",
+            key=make_key(key_prefix, "inspect_update_files"),
+            use_container_width=True,
+        ):
             result = inspect_update_files(BASE_DIR)
             st.session_state.update_inspection = result
             if result["ok"]:
@@ -2309,7 +2570,11 @@ def render_updates(config: dict, app_env: str) -> None:
 
     col3, col4 = st.columns(2)
     with col3:
-        if st.button("Update anwenden", use_container_width=True):
+        if st.button(
+            "Update anwenden",
+            key=make_key(key_prefix, "apply_update"),
+            use_container_width=True,
+        ):
             result = apply_code_update(BASE_DIR)
             if result["ok"]:
                 st.success(result["message"])
@@ -2317,7 +2582,11 @@ def render_updates(config: dict, app_env: str) -> None:
             else:
                 st.error(result["message"])
     with col4:
-        if st.button("Letztes Backup wiederherstellen", use_container_width=True):
+        if st.button(
+            "Letztes Backup wiederherstellen",
+            key=make_key(key_prefix, "restore_latest_backup"),
+            use_container_width=True,
+        ):
             result = restore_latest_backup(BASE_DIR)
             if result["ok"]:
                 st.success(result["message"])
@@ -2364,7 +2633,7 @@ def render_updates(config: dict, app_env: str) -> None:
         st.code("\n".join(log_file.read_text(encoding="utf-8").splitlines()[-20:]))
 
 
-def render_settings(app_env: str) -> None:
+def render_settings(app_env: str, key_prefix: str) -> None:
     st.subheader("Settings")
     config = enforce_security_defaults(load_config(CONFIG_PATH), app_env)
     if not require_sensitive_access(config, "settings"):
@@ -2372,21 +2641,25 @@ def render_settings(app_env: str) -> None:
 
     st.write(f"APP_ENV: `{app_env}`")
     render_account_settings(config)
-    render_runtime_mode_settings(config)
-    render_ports_and_integrations_settings(config)
+    render_runtime_mode_settings(config, key_prefix=make_key(key_prefix, "runtime_mode"))
+    render_ports_and_integrations_settings(config, key_prefix=make_key(key_prefix, "ports_integrations"))
     if is_cloud_env(app_env):
         st.info("macOS Evening Job ist im Cloud-Modus ausgeblendet.")
     else:
-        render_evening_job_settings()
+        render_evening_job_settings(key_prefix=make_key(key_prefix, "evening_job"))
 
     config_text = CONFIG_PATH.read_text(encoding="utf-8")
     edited = st.text_area(
         "config.json",
         value=config_text,
         height=420,
-        key="config_editor",
+        key=make_key(key_prefix, "config_editor"),
     )
-    if st.button("Config speichern", use_container_width=True):
+    if st.button(
+        "Config speichern",
+        key=make_key(key_prefix, "save_config"),
+        use_container_width=True,
+    ):
         try:
             parsed = enforce_security_defaults(json.loads(edited), app_env)
             save_config(parsed, CONFIG_PATH)
@@ -2438,9 +2711,13 @@ def require_sensitive_access(config: dict, area: str) -> bool:
     password = st.text_input(
         "Account-Passwort erneut eingeben",
         type="password",
-        key=f"{area}_sensitive_password",
+        key=make_key(area, "sensitive_password"),
     )
-    if st.button("Geschuetzten Bereich entsperren", key=f"{area}_unlock", use_container_width=True):
+    if st.button(
+        "Geschuetzten Bereich entsperren",
+        key=make_key(area, "unlock"),
+        use_container_width=True,
+    ):
         store = AuthStore(BASE_DIR / config.get("auth", {}).get("database_path", "data/auth.duckdb"))
         result = store.verify_password(
             email,
@@ -2458,7 +2735,7 @@ def require_sensitive_access(config: dict, area: str) -> bool:
     return False
 
 
-def render_ports_and_integrations_settings(config: dict) -> None:
+def render_ports_and_integrations_settings(config: dict, key_prefix: str) -> None:
     st.markdown("### Ports, Seitenlinks und APIs")
     st.caption(
         "Vorbereiteter, passwortgeschuetzter Bereich. Hier werden nur Konfigurationen "
@@ -2489,7 +2766,7 @@ def render_ports_and_integrations_settings(config: dict) -> None:
         }
     ]
 
-    with st.form("ports_and_integrations_form"):
+    with st.form(make_key(key_prefix, "form")):
         col1, col2, col3 = st.columns(3)
         with col1:
             streamlit_port = st.number_input(
@@ -2498,18 +2775,21 @@ def render_ports_and_integrations_settings(config: dict) -> None:
                 max_value=65535,
                 value=int(settings.get("streamlit_port", 8501)),
                 step=1,
+                key=make_key(key_prefix, "streamlit_port"),
             )
         with col2:
             local_api_port = st.text_input(
                 "Lokaler API-Port optional",
                 value=str(settings.get("local_api_port", "")),
                 placeholder="z.B. 8000",
+                key=make_key(key_prefix, "local_api_port"),
             )
         with col3:
             webhook_port = st.text_input(
                 "Webhook-Port optional",
                 value=str(settings.get("webhook_port", "")),
                 placeholder="z.B. 9000",
+                key=make_key(key_prefix, "webhook_port"),
             )
 
         st.caption(
@@ -2523,7 +2803,7 @@ def render_ports_and_integrations_settings(config: dict) -> None:
             num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
-            key="protected_links_editor",
+            key=make_key(key_prefix, "protected_links_editor"),
             column_config={
                 "enabled": st.column_config.CheckboxColumn("Aktiv"),
                 "name": "Name",
@@ -2543,7 +2823,7 @@ def render_ports_and_integrations_settings(config: dict) -> None:
             num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
-            key="protected_apis_editor",
+            key=make_key(key_prefix, "protected_apis_editor"),
             column_config={
                 "enabled": st.column_config.CheckboxColumn("Aktiv"),
                 "name": "Name",
@@ -2563,7 +2843,11 @@ def render_ports_and_integrations_settings(config: dict) -> None:
             },
         )
 
-        submitted = st.form_submit_button("Ports, Links und APIs speichern", use_container_width=True)
+        submitted = st.form_submit_button(
+            "Ports, Links und APIs speichern",
+            key=make_key(key_prefix, "submit"),
+            use_container_width=True,
+        )
         if submitted:
             settings["streamlit_port"] = int(streamlit_port)
             settings["local_api_port"] = local_api_port.strip()
@@ -2624,9 +2908,17 @@ def authenticate(app_env: str, config: dict) -> bool:
         if pending_email:
             render_two_factor_login_step(store, pending_email, rate_limit=rate_limit)
         else:
-            email = st.text_input("E-Mail", key="login_email")
-            password = st.text_input("Passwort", type="password", key="login_password")
-            if st.button("Einloggen", use_container_width=True):
+            email = st.text_input("E-Mail", key=make_key("auth", "login", "email"))
+            password = st.text_input(
+                "Passwort",
+                type="password",
+                key=make_key("auth", "login", "password"),
+            )
+            if st.button(
+                "Einloggen",
+                key=make_key("auth", "login", "submit"),
+                use_container_width=True,
+            ):
                 two_factor_config = auth_config.get("two_factor", {})
                 if two_factor_config.get("enabled", True):
                     result = store.verify_password(email, password, rate_limit=rate_limit)
@@ -2652,14 +2944,22 @@ def authenticate(app_env: str, config: dict) -> bool:
         if not auth_config.get("allow_registration", True):
             st.info("Registrierung ist deaktiviert.")
         else:
-            reg_email = st.text_input("E-Mail", key="register_email")
-            reg_password = st.text_input("Passwort", type="password", key="register_password")
+            reg_email = st.text_input("E-Mail", key=make_key("auth", "register", "email"))
+            reg_password = st.text_input(
+                "Passwort",
+                type="password",
+                key=make_key("auth", "register", "password"),
+            )
             reg_password_2 = st.text_input(
                 "Passwort wiederholen",
                 type="password",
-                key="register_password_2",
+                key=make_key("auth", "register", "password_repeat"),
             )
-            if st.button("Registrieren und Code senden", use_container_width=True):
+            if st.button(
+                "Registrieren und Code senden",
+                key=make_key("auth", "register", "submit"),
+                use_container_width=True,
+            ):
                 if reg_password != reg_password_2:
                     st.error("Die Passwoerter stimmen nicht ueberein.")
                 else:
@@ -2705,9 +3005,16 @@ def authenticate(app_env: str, config: dict) -> bool:
                                 st.code(result.verification_code or "")
 
     with confirm_tab:
-        confirm_email = st.text_input("E-Mail", key="confirm_email")
-        confirm_code = st.text_input("Bestaetigungscode", key="confirm_code")
-        if st.button("E-Mail bestaetigen", use_container_width=True):
+        confirm_email = st.text_input("E-Mail", key=make_key("auth", "confirm", "email"))
+        confirm_code = st.text_input(
+            "Bestaetigungscode",
+            key=make_key("auth", "confirm", "code"),
+        )
+        if st.button(
+            "E-Mail bestaetigen",
+            key=make_key("auth", "confirm", "submit"),
+            use_container_width=True,
+        ):
             result = store.verify_email(
                 confirm_email,
                 confirm_code,
@@ -2775,10 +3082,14 @@ def render_two_factor_login_step(store: AuthStore, email: str, rate_limit: Optio
         st.caption("Lokaler Entwicklungsmodus: Code wird angezeigt, weil kein SMTP gesetzt ist.")
         st.code(local_code)
 
-    code = st.text_input("Zwei-Faktor-Code", key="login_2fa_code")
+    code = st.text_input("Zwei-Faktor-Code", key=make_key("auth", "login", "2fa_code"))
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("2FA bestaetigen", use_container_width=True):
+        if st.button(
+            "2FA bestaetigen",
+            key=make_key("auth", "login", "2fa_confirm"),
+            use_container_width=True,
+        ):
             result = store.verify_two_factor_code(
                 email,
                 code,
@@ -2795,7 +3106,11 @@ def render_two_factor_login_step(store: AuthStore, email: str, rate_limit: Optio
             else:
                 st.error(result.message)
     with col2:
-        if st.button("Login abbrechen", use_container_width=True):
+        if st.button(
+            "Login abbrechen",
+            key=make_key("auth", "login", "cancel"),
+            use_container_width=True,
+        ):
             st.session_state.pop("pending_2fa_email", None)
             st.session_state.pop("local_2fa_code", None)
             st.rerun()
@@ -2826,8 +3141,16 @@ def require_app_password_gate(app_env: str) -> bool:
         "Erster Zugriffsschutz vor dem Benutzer-Login. "
         "Danach folgt die E-Mail-Anmeldung mit 2FA."
     )
-    entered = st.text_input("App-Passwort", type="password", key="app_password_gate_input")
-    if st.button("App entsperren", use_container_width=True, key="app_password_gate_button"):
+    entered = st.text_input(
+        "App-Passwort",
+        type="password",
+        key=make_key("auth", "app_password_gate", "input"),
+    )
+    if st.button(
+        "App entsperren",
+        use_container_width=True,
+        key=make_key("auth", "app_password_gate", "button"),
+    ):
         if hmac.compare_digest(entered or "", password):
             st.session_state.app_password_ok = True
             st.session_state.authenticated = True
@@ -2844,7 +3167,11 @@ def render_account_bar() -> None:
         return
     with st.sidebar:
         st.caption(f"Angemeldet als {email}")
-        if st.button("Logout", use_container_width=True):
+        if st.button(
+            "Logout",
+            key=make_key("auth", "logout"),
+            use_container_width=True,
+        ):
             for key in [
                 "authenticated_email",
                 "authenticated",
@@ -2890,7 +3217,7 @@ def get_secret(key: str) -> Optional[str]:
     return str(value)
 
 
-def render_runtime_mode_settings(config: dict) -> None:
+def render_runtime_mode_settings(config: dict, key_prefix: str) -> None:
     st.markdown("### Vorbereiteter Modus")
     runtime = config.setdefault("runtime_mode", {})
     available = runtime.get("available", ["papertrading", "real"])
@@ -2899,13 +3226,17 @@ def render_runtime_mode_settings(config: dict) -> None:
         "Modus auswaehlen",
         available,
         index=available.index(active) if active in available else 0,
-        key="runtime_mode_select",
+        key=make_key(key_prefix, "select"),
     )
     st.caption(
         "Zwei Schritte: Modus auswaehlen, dann speichern. "
         "Auch Real aktiviert keine Orders und keine Broker-Funktion."
     )
-    if st.button("Modus speichern", use_container_width=True):
+    if st.button(
+        "Modus speichern",
+        key=make_key(key_prefix, "save"),
+        use_container_width=True,
+    ):
         runtime["active"] = selected
         runtime["orders_enabled"] = False
         runtime["broker_enabled"] = False
@@ -2914,7 +3245,7 @@ def render_runtime_mode_settings(config: dict) -> None:
         st.success(f"Modus gespeichert: {selected}. Analyse-only bleibt aktiv. Keine neue Analyse gestartet.")
 
 
-def render_evening_job_settings() -> None:
+def render_evening_job_settings(key_prefix: str) -> None:
     st.markdown("### Evening Job")
     st.caption(
         "Installiert einen macOS LaunchAgent fuer 22:30 Uhr. "
@@ -2928,14 +3259,22 @@ def render_evening_job_settings() -> None:
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Evening Job installieren", use_container_width=True):
+        if st.button(
+            "Evening Job installieren",
+            key=make_key(key_prefix, "install"),
+            use_container_width=True,
+        ):
             result = run_local_script(BASE_DIR / "install_evening_job.sh")
             if result["ok"]:
                 st.success(result["output"])
             else:
                 st.error(result["output"])
     with col2:
-        if st.button("Evening Job entfernen", use_container_width=True):
+        if st.button(
+            "Evening Job entfernen",
+            key=make_key(key_prefix, "uninstall"),
+            use_container_width=True,
+        ):
             result = run_local_script(BASE_DIR / "uninstall_evening_job.sh")
             if result["ok"]:
                 st.success(result["output"])
@@ -3211,7 +3550,7 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
             )
 
 
-def render_analysis_table(df: pd.DataFrame) -> None:
+def render_analysis_table(df: pd.DataFrame, key_prefix: str) -> None:
     if df.empty:
         render_empty_state(
             "Keine Analysezeilen",
@@ -3244,6 +3583,7 @@ def render_analysis_table(df: pd.DataFrame) -> None:
         display,
         use_container_width=True,
         hide_index=True,
+        key=make_key(key_prefix, "dataframe"),
         column_config={
             "label": "Name",
             "ticker": "Ticker",
@@ -3276,7 +3616,7 @@ def render_analysis_table(df: pd.DataFrame) -> None:
     )
 
 
-def render_score_chart(df: pd.DataFrame, title: str) -> None:
+def render_score_chart(df: pd.DataFrame, title: str, key_prefix: str) -> None:
     if df.empty:
         return
     fig = px.bar(
@@ -3288,7 +3628,7 @@ def render_score_chart(df: pd.DataFrame, title: str) -> None:
         title=title,
     )
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=45, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=make_key(key_prefix, "score_plotly"))
     risk_fig = px.bar(
         df,
         x="label",
@@ -3298,10 +3638,10 @@ def render_score_chart(df: pd.DataFrame, title: str) -> None:
         title=f"{title} - Risk Score",
     )
     risk_fig.update_layout(height=320, margin=dict(l=10, r=10, t=45, b=10))
-    st.plotly_chart(risk_fig, use_container_width=True)
+    st.plotly_chart(risk_fig, use_container_width=True, key=make_key(key_prefix, "risk_plotly"))
 
 
-def render_relative_strength_chart(df: pd.DataFrame) -> None:
+def render_relative_strength_chart(df: pd.DataFrame, key_prefix: str) -> None:
     if df.empty:
         return
     fig = px.bar(
@@ -3311,10 +3651,10 @@ def render_relative_strength_chart(df: pd.DataFrame) -> None:
         title="Relative Staerke gegen QQQ",
     )
     fig.update_layout(height=320, margin=dict(l=10, r=10, t=45, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=make_key(key_prefix, "plotly"))
 
 
-def render_report_previews(config: dict, compact: bool) -> None:
+def render_report_previews(config: dict, compact: bool, key_prefix: str) -> None:
     reports_dir = Path(config.get("reports_dir", "reports"))
     market_path = reports_dir / "market_summary.csv"
     watchlist_path = reports_dir / "watchlist.csv"
@@ -3328,13 +3668,23 @@ def render_report_previews(config: dict, compact: bool) -> None:
             )
         return
 
-    with st.expander("Reports aus letzter Analyse", expanded=not compact):
+    with st.expander(f"Reports aus letzter Analyse ({key_prefix})", expanded=not compact):
         if market_path.exists():
             st.markdown("**market_summary.csv**")
-            st.dataframe(pd.read_csv(market_path), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.read_csv(market_path),
+                use_container_width=True,
+                hide_index=True,
+                key=make_key(key_prefix, "market_summary_dataframe"),
+            )
         if watchlist_path.exists():
             st.markdown("**watchlist.csv**")
-            st.dataframe(pd.read_csv(watchlist_path), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.read_csv(watchlist_path),
+                use_container_width=True,
+                hide_index=True,
+                key=make_key(key_prefix, "watchlist_dataframe"),
+            )
         if evening_path.exists():
             st.markdown("**evening_summary.txt**")
             st.code(evening_path.read_text(encoding="utf-8"))
