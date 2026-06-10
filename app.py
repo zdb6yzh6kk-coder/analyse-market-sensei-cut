@@ -51,7 +51,40 @@ from modules.broker_router import broker_status, execution_plan, provider_matrix
 from modules.backtester import BACKTEST_SETUPS, BacktestSettings, Backtester
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
-from modules.market_regime import evaluate_market_regime, write_market_regime_reports
+try:
+    from modules.market_regime import evaluate_market_regime, write_market_regime_reports
+    MARKET_REGIME_IMPORT_ERROR: Optional[Exception] = None
+except ModuleNotFoundError as exc:
+    MARKET_REGIME_IMPORT_ERROR = exc
+
+    def evaluate_market_regime(config: dict, analysis_result: dict) -> dict:
+        return {
+            "issues": [
+                "Market-Regime-Modul fehlt im Deployment. Bitte modules/market_regime.py mit hochladen."
+            ],
+            "contexts": {},
+            "summary": pd.DataFrame(),
+            "rankings": {},
+            "history": pd.DataFrame(),
+            "strategy_map": pd.DataFrame(
+                columns=["Regime", "Strategy Type", "Description"]
+            ),
+        }
+
+    def write_market_regime_reports(
+        evaluation: dict,
+        reports_dir="reports",
+    ) -> list[Path]:
+        reports_path = Path(reports_dir)
+        reports_path.mkdir(parents=True, exist_ok=True)
+        paths = [
+            reports_path / "market_regime_report.csv",
+            reports_path / "regime_history.csv",
+            reports_path / "regime_strategy_map.csv",
+        ]
+        for path in paths:
+            pd.DataFrame().to_csv(path, index=False)
+        return paths
 from modules.online_ops import (
     build_cloud_backup,
     build_health_report,
@@ -7620,6 +7653,12 @@ def render_market_regime(config: dict, key_prefix: str) -> None:
         "Dies ist keine Handelsentscheidung, kein Kaufsignal und kein Verkaufssignal. "
         "Die Engine analysiert nur das aktuelle Marktumfeld und ordnet passende Strategie-Typen zu."
     )
+    if MARKET_REGIME_IMPORT_ERROR is not None:
+        st.error(
+            "Market-Regime-Modul wurde nicht geladen. "
+            "Bitte pruefen, ob `modules/market_regime.py` im GitHub-Repo vorhanden ist."
+        )
+        st.caption(f"Import-Hinweis: {MARKET_REGIME_IMPORT_ERROR}")
 
     col_action, col_report = st.columns(2)
     with col_action:
