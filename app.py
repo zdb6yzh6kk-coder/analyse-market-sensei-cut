@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import hmac
 import inspect
@@ -52,9 +53,11 @@ from modules.backtester import BACKTEST_SETUPS, BacktestSettings, Backtester
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
 try:
-    from modules.market_regime import evaluate_market_regime, write_market_regime_reports
+    market_regime_module = importlib.import_module("modules.market_regime")
+    evaluate_market_regime = market_regime_module.evaluate_market_regime
+    write_market_regime_reports = market_regime_module.write_market_regime_reports
     MARKET_REGIME_IMPORT_ERROR: Optional[Exception] = None
-except ModuleNotFoundError as exc:
+except Exception as exc:
     MARKET_REGIME_IMPORT_ERROR = exc
 
     def evaluate_market_regime(config: dict, analysis_result: dict) -> dict:

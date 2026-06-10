@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import logging
 import shutil
@@ -12,6 +13,34 @@ import pandas as pd
 
 from .database import MarketDatabase
 from .market_analyzer import MarketAnalyzer
+try:
+    market_regime_module = importlib.import_module(".market_regime", package=__package__)
+    evaluate_market_regime = market_regime_module.evaluate_market_regime
+    write_market_regime_reports = market_regime_module.write_market_regime_reports
+except Exception:
+    def evaluate_market_regime(config: dict, analysis_result: dict) -> dict:
+        return {
+            "issues": [
+                "Market-Regime-Modul fehlt im Deployment. Bitte modules/market_regime.py mit hochladen."
+            ],
+            "summary": pd.DataFrame(),
+            "history": pd.DataFrame(),
+            "strategy_map": pd.DataFrame(
+                columns=["Regime", "Strategy Type", "Description"]
+            ),
+        }
+
+    def write_market_regime_reports(evaluation: dict, reports_dir: Union[str, Path] = "reports") -> list[Path]:
+        reports_path = Path(reports_dir)
+        reports_path.mkdir(parents=True, exist_ok=True)
+        paths = [
+            reports_path / "market_regime_report.csv",
+            reports_path / "regime_history.csv",
+            reports_path / "regime_strategy_map.csv",
+        ]
+        for path in paths:
+            pd.DataFrame().to_csv(path, index=False)
+        return paths
 from .report_generator import ReportGenerator
 
 
@@ -72,12 +101,30 @@ def run_full_update(
             runtime_mode,
             sector_rotation=sector_rotation,
         )
+        regime_result = {
+            "dashboard": dashboard,
+            "watchlist": watchlist,
+            "sector_rotation": sector_rotation,
+            "histories": analyzer.histories,
+            "updated_at": updated_at,
+        }
+        regime_paths = write_market_regime_reports(
+            evaluate_market_regime(config, regime_result),
+            config.get("reports_dir", "reports"),
+        )
+        report_paths.extend(regime_paths)
         for report_path in report_paths:
             kind = report_path.stem
             if kind == "market_summary":
                 row_count = len(dashboard)
             elif kind == "sector_rotation":
                 row_count = len(sector_rotation)
+            elif kind == "market_regime_report":
+                row_count = 3
+            elif kind == "regime_history":
+                row_count = 3
+            elif kind == "regime_strategy_map":
+                row_count = 9
             else:
                 row_count = len(watchlist)
             database.record_report(report_path, kind, row_count)
