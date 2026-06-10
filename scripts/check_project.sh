@@ -9,17 +9,22 @@ grep -qx "python-3.11" runtime.txt
 PYTHONPYCACHEPREFIX=.pycache python3 -m py_compile \
   main.py \
   app.py \
+  scripts/check_streamlit_keys.py \
+  scripts/smoke_app.py \
   modules/__init__.py \
   modules/app_env.py \
   modules/auth.py \
+  modules/broker_router.py \
   modules/data_provider.py \
   modules/database.py \
   modules/indicators.py \
   modules/market_analyzer.py \
+  modules/online_ops.py \
   modules/portfolio_tracker.py \
   modules/power_check.py \
   modules/risk_management.py \
   modules/score_engine.py \
+  modules/trading_safety.py \
   modules/report_generator.py \
   modules/updater.py \
   modules/workspace_store.py
@@ -28,7 +33,10 @@ bash -n install_evening_job.sh
 bash -n uninstall_evening_job.sh
 bash -n desktop_start.command
 bash -n desktop_stop.command
+bash -n scripts/check_project.sh
 bash -n scripts/security_check.sh
+bash -n scripts/prepare_cloud_deploy.sh
+python3 scripts/check_streamlit_keys.py
 
 if grep -R "Trade Republic\\|orders_enabled.: true\\|broker_enabled.: true\\|execute_api_calls.: true\\|auth.*enabled.: false\\|two_factor.*enabled.: false\\|require_password_for_sensitive_settings.: false" \
   app.py main.py modules config.json README.md; then

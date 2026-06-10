@@ -27,6 +27,8 @@ DEFAULT_RATE_LIMIT = {
     "verification_max_failures": 5,
     "registration_max_attempts": 3,
     "two_factor_send_max_attempts": 3,
+    "password_reset_send_max_attempts": 3,
+    "password_reset_max_failures": 5,
 }
 
 
@@ -296,6 +298,147 @@ class AuthStore:
         finally:
             con.close()
 
+    def create_password_reset_code(
+        self,
+        email: str,
+        code_minutes: int,
+        rate_limit: Optional[dict] = None,
+    ) -> AuthResult:
+        normalized = normalize_email(email)
+        if not EMAIL_RE.match(normalized):
+            return AuthResult(False, "Bitte gib eine gueltige E-Mail-Adresse ein.")
+
+        settings = rate_limit_settings(rate_limit)
+        max_attempts = int(
+            settings.get(
+                "password_reset_send_max_attempts",
+                settings.get("two_factor_send_max_attempts", 3),
+            )
+        )
+        if self.too_many_recent_attempts(
+            normalized,
+            "password_reset_send",
+            max_attempts,
+            int(settings["window_minutes"]),
+        ):
+            return AuthResult(False, "Zu viele Passwort-Reset-Anforderungen. Bitte spaeter erneut versuchen.")
+
+        now = datetime.now()
+        con = duckdb.connect(str(self.database_path))
+        try:
+            existing = con.execute(
+                """
+                SELECT email, is_verified
+                FROM users
+                WHERE email = ?
+                """,
+                [normalized],
+            ).fetchone()
+            if not existing or not existing[1]:
+                self._record_auth_attempt(con, normalized, "password_reset_send", False)
+                return AuthResult(
+                    True,
+                    "Wenn die E-Mail registriert ist, wurde ein Reset-Code vorbereitet.",
+                    email=normalized,
+                )
+
+            code = create_verification_code()
+            salt = create_salt()
+            code_hash = hash_secret(code, salt)
+            expires_at = now + timedelta(minutes=code_minutes)
+            con.execute(
+                """
+                INSERT INTO two_factor_codes VALUES (?, ?, ?, ?, ?, NULL, ?)
+                """,
+                [normalized, code_hash, salt, "password_reset", expires_at, now],
+            )
+            self._record_auth_attempt(con, normalized, "password_reset_send", True)
+        finally:
+            con.close()
+
+        return AuthResult(
+            True,
+            "Passwort-Reset-Code erstellt.",
+            email=normalized,
+            verification_code=code,
+        )
+
+    def reset_password(
+        self,
+        email: str,
+        code: str,
+        new_password: str,
+        rate_limit: Optional[dict] = None,
+    ) -> AuthResult:
+        normalized = normalize_email(email)
+        validation = validate_email_and_password(normalized, new_password)
+        if validation:
+            return AuthResult(False, validation)
+
+        settings = rate_limit_settings(rate_limit)
+        max_failures = int(
+            settings.get(
+                "password_reset_max_failures",
+                settings.get("verification_max_failures", 5),
+            )
+        )
+        if self.too_many_recent_failures(
+            normalized,
+            "password_reset",
+            max_failures,
+            int(settings["window_minutes"]),
+        ):
+            return AuthResult(False, "Zu viele falsche Reset-Codes. Bitte spaeter erneut versuchen.")
+
+        con = duckdb.connect(str(self.database_path))
+        try:
+            row = con.execute(
+                """
+                SELECT code_hash, salt, expires_at
+                FROM two_factor_codes
+                WHERE email = ? AND purpose = 'password_reset' AND used_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [normalized],
+            ).fetchone()
+            if not row:
+                self._record_auth_attempt(con, normalized, "password_reset", False)
+                return AuthResult(False, "Kein offener Reset-Code gefunden.")
+
+            code_hash, salt, expires_at = row
+            if datetime.now() > expires_at:
+                self._record_auth_attempt(con, normalized, "password_reset", False)
+                return AuthResult(False, "Der Reset-Code ist abgelaufen.")
+            if not hmac.compare_digest(hash_secret(code.strip(), salt), code_hash):
+                self._record_auth_attempt(con, normalized, "password_reset", False)
+                return AuthResult(False, "Der Reset-Code ist falsch.")
+
+            password_salt = create_salt()
+            password_hash = hash_secret(new_password, password_salt)
+            now = datetime.now()
+            con.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, salt = ?, is_verified = true, verified_at = COALESCE(verified_at, ?)
+                WHERE email = ?
+                """,
+                [password_hash, password_salt, now, normalized],
+            )
+            con.execute(
+                """
+                UPDATE two_factor_codes
+                SET used_at = ?
+                WHERE email = ? AND purpose = 'password_reset' AND used_at IS NULL
+                """,
+                [now, normalized],
+            )
+            self._record_auth_attempt(con, normalized, "password_reset", True)
+        finally:
+            con.close()
+
+        return AuthResult(True, "Passwort wurde aktualisiert. Du kannst dich jetzt anmelden.", normalized)
+
     def create_two_factor_code(
         self,
         email: str,
@@ -512,6 +655,16 @@ def send_two_factor_email(email: str, code: str, settings: dict) -> AuthResult:
     )
 
 
+def send_password_reset_email(email: str, code: str, settings: dict) -> AuthResult:
+    return send_auth_code_email(
+        email=email,
+        code=code,
+        settings=settings,
+        subject="Analyse Market Sensei Cut - Passwort zuruecksetzen",
+        intro="Dein Passwort-Reset-Code fuer Analyse Market Sensei Cut lautet:",
+    )
+
+
 def send_auth_code_email(
     email: str,
     code: str,
@@ -578,6 +731,8 @@ def rate_limit_settings(rate_limit: Optional[dict]) -> dict:
             "verification_max_failures",
             "registration_max_attempts",
             "two_factor_send_max_attempts",
+            "password_reset_send_max_attempts",
+            "password_reset_max_failures",
         ]:
             settings[key] = 0
     return settings

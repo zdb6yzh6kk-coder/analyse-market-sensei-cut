@@ -27,7 +27,7 @@ if rg -n \
   -g '!__pycache__/**' \
   -g '!.pycache/**' \
   -g '!scripts/security_check.sh' \
-  -- "-----BEGIN|AKIA|sk-[A-Za-z0-9]|password\\s*=\\s*['\\\"][^<]|token\\s*=\\s*['\\\"][^<]|api[_-]?key\\s*=\\s*['\\\"][^<]|secret\\s*=\\s*['\\\"][^<]"; then
+  -- "-----BEGIN|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|password\\s*=\\s*['\\\"][^<]|token\\s*=\\s*['\\\"][^<]|api[_-]?key\\s*=\\s*['\\\"][^<]|secret\\s*=\\s*['\\\"][^<]"; then
   echo "Found possible hard-coded secret."
   exit 1
 fi

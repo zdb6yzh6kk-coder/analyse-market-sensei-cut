@@ -11,6 +11,7 @@ def add_indicators(data: pd.DataFrame) -> pd.DataFrame:
     frame["ema_50"] = frame["close"].ewm(span=50, adjust=False, min_periods=50).mean()
     frame["ema_100"] = frame["close"].ewm(span=100, adjust=False, min_periods=100).mean()
     frame["ema_200"] = frame["close"].ewm(span=200, adjust=False, min_periods=200).mean()
+    frame["return_1"] = frame["close"].pct_change(1) * 100
     frame["return_5"] = frame["close"].pct_change(5) * 100
     frame["return_20"] = frame["close"].pct_change(20) * 100
     frame["volatility_20"] = frame["close"].pct_change().rolling(20, min_periods=10).std() * np.sqrt(252) * 100
@@ -39,6 +40,7 @@ def latest_snapshot(data: pd.DataFrame) -> dict:
         "ema_50": _to_float(latest.get("ema_50")),
         "ema_100": _to_float(latest.get("ema_100")),
         "ema_200": _to_float(latest.get("ema_200")),
+        "return_1": _to_float(latest.get("return_1")),
         "return_5": _to_float(latest.get("return_5")),
         "return_20": _to_float(latest.get("return_20")),
         "volatility_20": _to_float(latest.get("volatility_20")),

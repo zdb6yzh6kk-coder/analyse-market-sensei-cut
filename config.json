@@ -7,6 +7,7 @@
     "require_email_verification": true,
     "allowed_emails": [],
     "verification_code_minutes": 30,
+    "password_reset_code_minutes": 15,
     "database_path": "data/auth.duckdb",
     "two_factor": {
       "enabled": true,
@@ -22,7 +23,9 @@
       "two_factor_max_failures": 5,
       "verification_max_failures": 5,
       "registration_max_attempts": 3,
-      "two_factor_send_max_attempts": 3
+      "two_factor_send_max_attempts": 3,
+      "password_reset_send_max_attempts": 3,
+      "password_reset_max_failures": 5
     },
     "passkeys": {
       "prepared": true,
@@ -38,6 +41,34 @@
     "store_api_keys_in_config": false,
     "sensitive_unlock_minutes": 15,
     "note": "Settings, Updates, Ports und API-Platzhalter sind nach Login zusaetzlich per Passwort-Gate geschuetzt."
+  },
+  "online_operations": {
+    "cloud_updates_disabled": true,
+    "local_shell_disabled_in_cloud": true,
+    "secrets_visible_values": false,
+    "required_cloud_secrets": [
+      "APP_ENV",
+      "APP_PASSWORD",
+      "AUTH_ALLOWED_EMAILS",
+      "SMTP_HOST",
+      "SMTP_PORT",
+      "SMTP_USERNAME",
+      "SMTP_PASSWORD",
+      "SMTP_FROM"
+    ],
+    "optional_cloud_secrets": [
+      "SMTP_USE_TLS",
+      "ALPHA_VANTAGE_API_KEY"
+    ],
+    "backup_schema": "analyse_market_sensei_cut_cloud_backup_v1",
+    "monitoring_log": "logs/online_ops.jsonl",
+    "deploy_routine": [
+      "./scripts/check_project.sh",
+      "./scripts/security_check.sh",
+      "APP_ENV=cloud APP_PASSWORD=test python scripts/smoke_app.py",
+      "./scripts/prepare_cloud_deploy.sh"
+    ],
+    "description": "Betriebsschicht fuer Streamlit Cloud: saubere Secrets, Monitoring, JSON-Backup fuer Konfig/Watchlists und einfache Deploy-Pruefung."
   },
   "ports_and_integrations": {
     "protected": true,
@@ -83,6 +114,45 @@
     "broker_enabled": false,
     "description": "Vorbereiteter Modus-Schalter. Es werden keine Orders ausgefuehrt."
   },
+  "broker_planning": {
+    "enabled": true,
+    "execution_enabled": false,
+    "api_calls_enabled": false,
+    "live_connection_enabled": false,
+    "default_provider": "Interactive Brokers",
+    "preferred_providers": [
+      "Interactive Brokers",
+      "Alpaca",
+      "Tradier",
+      "Saxo",
+      "Kraken",
+      "Coinbase Advanced",
+      "Binance",
+      "IG"
+    ],
+    "description": "Provider-Matrix fuer spaetere Anbindung. Heute nur Planung, Journal und Sicherheitsstatus."
+  },
+  "trading_safety": {
+    "enabled": true,
+    "live_trading_enabled": false,
+    "sandbox_required": true,
+    "paper_api_first": true,
+    "order_preview_required": true,
+    "two_click_confirmation_required": true,
+    "hard_approval_required": true,
+    "automatic_orders_allowed": false,
+    "kill_switch_active": true,
+    "daily_loss_limit_enabled": true,
+    "daily_loss_limit_pct": 1.0,
+    "daily_loss_limit_amount": 0.0,
+    "audit_log_enabled": true,
+    "audit_log_path": "logs/trading_safety_audit.jsonl",
+    "default_connection_mode": "sandbox_paper",
+    "allowed_connection_modes": [
+      "sandbox_paper"
+    ],
+    "description": "Sicherheits-Gate fuer spaetere Broker-Anbindung. Live-Ausfuehrung bleibt aus, bis Sandbox, Vorschau, 2-Klick-Freigabe, Limits und Audit-Log hart erfuellt sind."
+  },
   "tracking": {
     "database_path": "data/portfolio_tracker.duckdb",
     "default_quantity": 1.0,
@@ -116,11 +186,12 @@
     "energy_mode": "manual_cache",
     "categories": [
       "Markt",
-      "Watchlist",
-      "Paper",
-      "Real",
-      "Research"
-    ],
+        "Watchlist",
+        "Paper",
+        "Real",
+        "Research",
+        "Screens"
+      ],
     "data_collection": {
       "manual_button": true,
       "auto_collect_on_analysis": false,
@@ -179,11 +250,91 @@
     "cache_dir": "data/cache",
     "database_path": "data/market.duckdb",
     "prefer_cache": true,
+    "primary_source": "yfinance",
+    "secondary_sources": [
+      "alpha_vantage"
+    ],
+    "quality_statuses": {
+      "live": "Direkte Live-Datenquelle. Aktuell nicht aktiv.",
+      "delayed": "Verzoegerte echte Marktdaten.",
+      "cache": "Lokaler Cache, nicht frisch von der Quelle.",
+      "fehlerhaft": "Keine sauberen echten Daten verfuegbar."
+    },
     "cache_max_age_hours": {
       "1d": 6,
       "1wk": 24,
       "1mo": 72,
       "default": 24
+    }
+  },
+  "score_model": {
+    "name": "sensei_chain_v2",
+    "logic": [
+      "SPY Trend",
+      "QQQ Trend",
+      "SPY + QQQ Bestaetigung",
+      "Mag7",
+      "Sektor-Staerke",
+      "Relative Staerke",
+      "Trendfolge"
+    ],
+    "weights": {
+      "spy_trend": 15,
+      "qqq_trend": 15,
+      "market_confirmation": 15,
+      "mag7": 15,
+      "sector_strength": 15,
+      "relative_strength": 10,
+      "trend_following": 15
+    },
+    "mag7_symbols": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "AMZN",
+      "META",
+      "GOOGL",
+      "TSLA"
+    ],
+    "sector_map": {
+      "AAPL": "XLK",
+      "MSFT": "XLK",
+      "NVDA": "XLK",
+      "AMZN": "XLY",
+      "TSLA": "XLY",
+      "META": "XLC",
+      "GOOGL": "XLC",
+      "GOOG": "XLC",
+      "SPY": "SPY",
+      "QQQ": "QQQ",
+      "^GSPC": "SPY",
+      "^NDX": "QQQ",
+      "GLD": "GLD",
+      "GC=F": "GLD",
+      "^GDAXI": "EWG",
+      "IWM": "IWM",
+      "XLK": "XLK",
+      "XLF": "XLF",
+      "XLI": "XLI",
+      "XLY": "XLY",
+      "XLP": "XLP",
+      "XLV": "XLV",
+      "XLE": "XLE",
+      "XLU": "XLU",
+      "XLB": "XLB",
+      "XLRE": "XLRE",
+      "XLC": "XLC",
+      "XHB": "XHB",
+      "PAVE": "PAVE",
+      "SMH": "SMH",
+      "USO": "USO",
+      "BTC-USD": "BTC-USD",
+      "DX-Y.NYB": "DX-Y.NYB",
+      "SHY": "SHY",
+      "IEI": "IEI",
+      "IEF": "IEF",
+      "^FVX": "^FVX",
+      "^TNX": "^TNX"
     }
   },
   "dashboard_symbols": [
@@ -192,17 +343,172 @@
       "ticker": "SPY"
     },
     {
+      "label": "SPX500",
+      "ticker": "^GSPC"
+    },
+    {
       "label": "QQQ",
       "ticker": "QQQ"
+    },
+    {
+      "label": "Nasdaq100",
+      "ticker": "^NDX"
     },
     {
       "label": "GLD",
       "ticker": "GLD"
     },
     {
-      "label": "DAX-Proxy",
+      "label": "Gold",
+      "ticker": "GC=F"
+    },
+    {
+      "label": "DAX",
       "ticker": "^GDAXI"
     }
+  ],
+  "sector_rotation_symbols": [
+    {
+      "label": "S&P 500",
+      "ticker": "SPY",
+      "category": "Breiter Markt"
+    },
+    {
+      "label": "Nasdaq 100",
+      "ticker": "QQQ",
+      "category": "Breiter Markt"
+    },
+    {
+      "label": "Russell 2000",
+      "ticker": "IWM",
+      "category": "Breiter Markt"
+    },
+    {
+      "label": "Technology",
+      "ticker": "XLK",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Financials",
+      "ticker": "XLF",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Industrials",
+      "ticker": "XLI",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Consumer Discretionary",
+      "ticker": "XLY",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Consumer Staples",
+      "ticker": "XLP",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Healthcare",
+      "ticker": "XLV",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Energy",
+      "ticker": "XLE",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Utilities",
+      "ticker": "XLU",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Materials",
+      "ticker": "XLB",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Real Estate",
+      "ticker": "XLRE",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Communication Services",
+      "ticker": "XLC",
+      "category": "US Sektoren"
+    },
+    {
+      "label": "Homebuilders / Bau",
+      "ticker": "XHB",
+      "category": "Bau"
+    },
+    {
+      "label": "Infrastructure",
+      "ticker": "PAVE",
+      "category": "Bau"
+    },
+    {
+      "label": "Semiconductors",
+      "ticker": "SMH",
+      "category": "Themen"
+    },
+    {
+      "label": "Gold",
+      "ticker": "GLD",
+      "category": "Rohstoffe"
+    },
+    {
+      "label": "Oil",
+      "ticker": "USO",
+      "category": "Rohstoffe"
+    },
+    {
+      "label": "Bitcoin",
+      "ticker": "BTC-USD",
+      "category": "Krypto"
+    },
+    {
+      "label": "US Dollar Index",
+      "ticker": "DX-Y.NYB",
+      "category": "Waehrung"
+    },
+    {
+      "label": "Treasury 1-3Y",
+      "ticker": "SHY",
+      "category": "Treasuries"
+    },
+    {
+      "label": "Treasury 3-7Y",
+      "ticker": "IEI",
+      "category": "Treasuries"
+    },
+    {
+      "label": "Treasury 7-10Y",
+      "ticker": "IEF",
+      "category": "Treasuries"
+    },
+    {
+      "label": "Treasury Yield 5Y",
+      "ticker": "^FVX",
+      "category": "Treasury Yields"
+    },
+    {
+      "label": "Treasury Yield 10Y",
+      "ticker": "^TNX",
+      "category": "Treasury Yields"
+    }
+  ],
+  "sector_rotation_categories": [
+    "Breiter Markt",
+    "US Sektoren",
+    "Bau",
+    "Themen",
+    "Rohstoffe",
+    "Krypto",
+    "Waehrung",
+    "Treasuries",
+    "Treasury Yields"
   ],
   "watchlist": [
     "AAPL",

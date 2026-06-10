@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
+import pandas as pd
+
 from .database import MarketDatabase
 from .market_analyzer import MarketAnalyzer
 from .report_generator import ReportGenerator
@@ -28,7 +30,11 @@ def save_config(config: dict, path: Union[str, Path] = "config.json") -> None:
     Path(path).write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def run_full_update(config: dict, generate_reports: bool = False) -> dict:
+def run_full_update(
+    config: dict,
+    generate_reports: bool = False,
+    include_sector_rotation: bool = True,
+) -> dict:
     analyzer = MarketAnalyzer(config)
     database = MarketDatabase(config["data"].get("database_path", "data/market.duckdb"))
 
@@ -40,26 +46,47 @@ def run_full_update(config: dict, generate_reports: bool = False) -> dict:
         config.get("watchlist", []),
         benchmark_ticker=config.get("benchmark", "QQQ"),
     )
+    if include_sector_rotation:
+        sector_rotation = analyzer.analyze_symbols(
+            config.get("sector_rotation_symbols", []),
+            benchmark_ticker="SPY",
+        )
+    else:
+        sector_rotation = pd.DataFrame()
 
     database.save_prices(analyzer.histories)
     database.save_analysis("dashboard", dashboard)
     database.save_analysis("watchlist", watchlist)
+    if not sector_rotation.empty:
+        database.save_analysis("sector_rotation", sector_rotation)
 
     reports = []
     updated_at = datetime.now().isoformat(timespec="seconds")
     if generate_reports:
         generator = ReportGenerator(config.get("reports_dir", "reports"))
         runtime_mode = config.get("runtime_mode", {}).get("active", "papertrading")
-        report_paths = generator.write_reports(dashboard, watchlist, updated_at, runtime_mode)
+        report_paths = generator.write_reports(
+            dashboard,
+            watchlist,
+            updated_at,
+            runtime_mode,
+            sector_rotation=sector_rotation,
+        )
         for report_path in report_paths:
             kind = report_path.stem
-            row_count = len(dashboard) if kind == "market_summary" else len(watchlist)
+            if kind == "market_summary":
+                row_count = len(dashboard)
+            elif kind == "sector_rotation":
+                row_count = len(sector_rotation)
+            else:
+                row_count = len(watchlist)
             database.record_report(report_path, kind, row_count)
         reports = [str(path) for path in report_paths]
 
     result = {
         "dashboard": dashboard,
         "watchlist": watchlist,
+        "sector_rotation": sector_rotation,
         "histories": analyzer.histories,
         "reports": reports,
         "updated_at": updated_at,
@@ -76,6 +103,7 @@ def _write_update_status(config: dict, result: dict) -> None:
         "updated_at": result["updated_at"],
         "dashboard_rows": len(result["dashboard"]),
         "watchlist_rows": len(result["watchlist"]),
+        "sector_rotation_rows": len(result.get("sector_rotation", [])),
         "reports": result["reports"],
     }
     (logs_dir / "last_update.json").write_text(
@@ -162,6 +190,7 @@ def inspect_update_files(project_root: Union[str, Path]) -> dict:
 
 def apply_code_update(project_root: Union[str, Path]) -> dict:
     root = Path(project_root)
+    root_resolved = root.resolve()
     backup_dir = None
     inspection = inspect_update_files(root)
     if not inspection["ok"]:
@@ -176,9 +205,14 @@ def apply_code_update(project_root: Union[str, Path]) -> dict:
     try:
         backup_dir = create_backup(root)
         updates_dir = root / "updates"
+        updates_resolved = updates_dir.resolve()
         for rel_text in inspection["files"]:
             source = updates_dir / rel_text
             target = root / rel_text
+            if not _path_within(source.resolve(), updates_resolved):
+                raise ValueError(f"Update-Quelle liegt ausserhalb von updates/: {rel_text}")
+            if not _path_within(target.resolve(), root_resolved):
+                raise ValueError(f"Update-Ziel liegt ausserhalb des Projekts: {rel_text}")
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
 
@@ -282,6 +316,9 @@ def _candidate_update_files(updates_dir: Path) -> list[Path]:
     ignored = {".DS_Store", "__pycache__", "last_update.json"}
     files = []
     for path in updates_dir.rglob("*"):
+        if path.is_symlink():
+            files.append(path)
+            continue
         if not path.is_file():
             continue
         if any(part in ignored for part in path.relative_to(updates_dir).parts):
@@ -291,6 +328,8 @@ def _candidate_update_files(updates_dir: Path) -> list[Path]:
 
 
 def _is_allowed_update_path(rel: Path) -> bool:
+    if any(part in {"", ".", ".."} for part in rel.parts):
+        return False
     rel_text = rel.as_posix()
     if rel_text in ALLOWED_UPDATE_FILES:
         return True
@@ -298,6 +337,9 @@ def _is_allowed_update_path(rel: Path) -> bool:
 
 
 def _validate_update_file(path: Path, rel: Path) -> Optional[str]:
+    if path.is_symlink():
+        return "Symlinks sind in updates/ nicht erlaubt."
+
     try:
         content = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -331,6 +373,14 @@ def _find_blocked_calls(tree: ast.AST) -> set[str]:
         if isinstance(node.func, ast.Attribute) and node.func.attr in BLOCKED_CALL_NAMES:
             blocked.add(node.func.attr)
     return blocked
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _increment_patch_version(version: str) -> str:

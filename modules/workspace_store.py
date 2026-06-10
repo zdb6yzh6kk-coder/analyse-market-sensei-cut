@@ -9,7 +9,7 @@ import duckdb
 import pandas as pd
 
 
-DEFAULT_CATEGORIES = ["Markt", "Watchlist", "Paper", "Real", "Research"]
+DEFAULT_CATEGORIES = ["Markt", "Watchlist", "Paper", "Real", "Research", "Screens"]
 DEFAULT_WATCHLIST_CATEGORIES = ["Indizes", "Aktien", "Gold", "Krypto", "Eigene Ideen"]
 
 
@@ -75,11 +75,13 @@ class WorkspaceStore:
                     category VARCHAR NOT NULL,
                     note VARCHAR,
                     pinned BOOLEAN NOT NULL,
+                    sort_order INTEGER,
                     created_at TIMESTAMP NOT NULL,
                     updated_at TIMESTAMP NOT NULL
                 )
                 """
             )
+            self._ensure_column(con, "custom_watchlist_symbols", "sort_order", "INTEGER")
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chart_lines (
@@ -97,6 +99,26 @@ class WorkspaceStore:
                     pinned BOOLEAN NOT NULL,
                     created_at TIMESTAMP NOT NULL,
                     updated_at TIMESTAMP NOT NULL
+                )
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_alerts (
+                    id VARCHAR PRIMARY KEY,
+                    email VARCHAR,
+                    alert_key VARCHAR NOT NULL,
+                    alert_type VARCHAR NOT NULL,
+                    severity VARCHAR NOT NULL,
+                    ticker VARCHAR,
+                    timeframe VARCHAR,
+                    title VARCHAR NOT NULL,
+                    detail VARCHAR,
+                    current_value VARCHAR,
+                    previous_value VARCHAR,
+                    fingerprint VARCHAR NOT NULL,
+                    created_at TIMESTAMP NOT NULL,
+                    last_seen_at TIMESTAMP NOT NULL
                 )
                 """
             )
@@ -264,10 +286,22 @@ class WorkspaceStore:
                 return symbol_id
 
             symbol_id = str(uuid4())
+            sort_order = self._next_sort_order(con, normalized_email, watchlist_id)
             con.execute(
                 """
-                INSERT INTO custom_watchlist_symbols
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO custom_watchlist_symbols (
+                    id,
+                    watchlist_id,
+                    email,
+                    ticker,
+                    category,
+                    note,
+                    pinned,
+                    sort_order,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     symbol_id,
@@ -277,6 +311,7 @@ class WorkspaceStore:
                     cleaned_category,
                     note.strip(),
                     bool(pinned),
+                    sort_order,
                     now,
                     now,
                 ],
@@ -310,12 +345,64 @@ class WorkspaceStore:
                     ON w.id = s.watchlist_id AND w.email = s.email
                 WHERE s.email = ?
                 {watchlist_clause}
-                ORDER BY s.pinned DESC, s.updated_at DESC, s.ticker ASC
+                ORDER BY COALESCE(s.sort_order, 999999) ASC,
+                         s.pinned DESC,
+                         s.updated_at DESC,
+                         s.ticker ASC
                 """,
                 params,
             ).df()
         finally:
             con.close()
+
+    def normalize_watchlist_order(self, email: str, watchlist_id: str) -> None:
+        symbols = self.list_watchlist_symbols(email, watchlist_id)
+        if symbols.empty:
+            return
+        if "sort_order" in symbols and symbols["sort_order"].notna().all():
+            return
+        self.set_watchlist_order(email, watchlist_id, symbols["id"].tolist())
+
+    def set_watchlist_order(self, email: str, watchlist_id: str, ordered_symbol_ids: list[str]) -> None:
+        normalized_email = self._email(email)
+        con = duckdb.connect(str(self.path))
+        try:
+            now = datetime.now()
+            for index, symbol_id in enumerate(ordered_symbol_ids):
+                con.execute(
+                    """
+                    UPDATE custom_watchlist_symbols
+                    SET sort_order = ?, updated_at = ?
+                    WHERE id = ? AND email = ? AND watchlist_id = ?
+                    """,
+                    [index * 10, now, symbol_id, normalized_email, watchlist_id],
+                )
+        finally:
+            con.close()
+
+    def move_watchlist_symbol(
+        self,
+        email: str,
+        watchlist_id: str,
+        symbol_id: str,
+        direction: str,
+    ) -> bool:
+        symbols = self.list_watchlist_symbols(email, watchlist_id)
+        if symbols.empty:
+            return False
+
+        ordered_ids = symbols["id"].tolist()
+        if symbol_id not in ordered_ids:
+            return False
+
+        current_index = ordered_ids.index(symbol_id)
+        target_index = current_index - 1 if direction == "up" else current_index + 1
+        if target_index < 0 or target_index >= len(ordered_ids):
+            return False
+
+        ordered_ids.insert(target_index, ordered_ids.pop(current_index))
+        self.set_watchlist_order(email, watchlist_id, ordered_ids)
+        return True
 
     def delete_watchlist_symbol(self, email: str, symbol_id: str) -> None:
         normalized_email = self._email(email)
@@ -572,6 +659,153 @@ class WorkspaceStore:
         finally:
             con.close()
 
+    def record_system_alerts(self, email: str, alerts: list[dict]) -> list[str]:
+        normalized_email = self._email(email)
+        if not alerts:
+            return []
+
+        now = datetime.now()
+        created_ids: list[str] = []
+        con = duckdb.connect(str(self.path))
+        try:
+            for alert in alerts:
+                alert_key = _clean_text(alert.get("alert_key"))
+                fingerprint = _clean_text(alert.get("fingerprint"))
+                title = _clean_text(alert.get("title"))
+                if not alert_key or not fingerprint or not title:
+                    continue
+
+                latest = con.execute(
+                    """
+                    SELECT id, fingerprint, current_value
+                    FROM system_alerts
+                    WHERE email = ? AND alert_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    [normalized_email, alert_key],
+                ).fetchone()
+
+                if latest and latest[1] == fingerprint:
+                    con.execute(
+                        """
+                        UPDATE system_alerts
+                        SET last_seen_at = ?
+                        WHERE id = ? AND email = ?
+                        """,
+                        [now, latest[0], normalized_email],
+                    )
+                    continue
+
+                alert_id = str(uuid4())
+                previous_value = latest[2] if latest else ""
+                con.execute(
+                    """
+                    INSERT INTO system_alerts
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        alert_id,
+                        normalized_email,
+                        alert_key,
+                        _clean_text(alert.get("alert_type")),
+                        _clean_text(alert.get("severity"), "pink"),
+                        _clean_text(alert.get("ticker")).upper(),
+                        _clean_text(alert.get("timeframe")),
+                        title,
+                        _clean_text(alert.get("detail")),
+                        _clean_text(alert.get("current_value")),
+                        previous_value,
+                        fingerprint,
+                        now,
+                        now,
+                    ],
+                )
+                created_ids.append(alert_id)
+        finally:
+            con.close()
+        return created_ids
+
+    def recent_system_alerts(
+        self,
+        email: str,
+        limit: int = 30,
+        timeframe: Optional[str] = None,
+        alert_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        normalized_email = self._email(email)
+        clauses = ["email = ?"]
+        params = [normalized_email]
+        if timeframe:
+            clauses.append("timeframe = ?")
+            params.append(timeframe.strip())
+        if alert_type:
+            clauses.append("alert_type = ?")
+            params.append(alert_type.strip())
+        params.append(int(limit))
+
+        con = duckdb.connect(str(self.path))
+        try:
+            return con.execute(
+                f"""
+                SELECT *
+                FROM system_alerts
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).df()
+        finally:
+            con.close()
+
+    def latest_system_alert(self, email: str, alert_key: str) -> Optional[dict]:
+        normalized_email = self._email(email)
+        con = duckdb.connect(str(self.path))
+        try:
+            row = con.execute(
+                """
+                SELECT *
+                FROM system_alerts
+                WHERE email = ? AND alert_key = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [normalized_email, alert_key.strip()],
+            ).df()
+            if row.empty:
+                return None
+            return row.iloc[0].to_dict()
+        finally:
+            con.close()
+
     @staticmethod
     def _email(email: str) -> str:
         return (email or "local").strip().lower()
+
+    @staticmethod
+    def _ensure_column(con, table_name: str, column_name: str, column_type: str) -> None:
+        columns = {
+            str(row[1]).lower()
+            for row in con.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+        }
+        if column_name.lower() not in columns:
+            con.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+    @staticmethod
+    def _next_sort_order(con, email: str, watchlist_id: str) -> int:
+        value = con.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -10) + 10
+            FROM custom_watchlist_symbols
+            WHERE email = ? AND watchlist_id = ?
+            """,
+            [email, watchlist_id],
+        ).fetchone()[0]
+        return int(value or 0)
+
+
+def _clean_text(value, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
