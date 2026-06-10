@@ -685,11 +685,26 @@ def inject_runtime_secrets(config: dict) -> dict:
 def _ensure_result(config: dict, app_env: str) -> None:
     if "analysis_result" not in st.session_state:
         with st.spinner("Lade Kernmarktdaten und berechne Analyse..."):
-            st.session_state.analysis_result = run_full_update(
+            st.session_state.analysis_result = _run_full_update_compatible(
                 config,
                 generate_reports=False,
                 include_sector_rotation=False,
             )
+
+
+def _run_full_update_compatible(
+    config: dict,
+    generate_reports: bool = False,
+    include_sector_rotation: bool = True,
+) -> dict:
+    kwargs = {"generate_reports": generate_reports}
+    try:
+        parameters = inspect.signature(run_full_update).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "include_sector_rotation" in parameters:
+        kwargs["include_sector_rotation"] = include_sector_rotation
+    return run_full_update(config, **kwargs)
 
 
 def _run_update(
@@ -698,7 +713,7 @@ def _run_update(
     include_sector_rotation: bool = True,
 ) -> None:
     with st.spinner("Analyse laeuft..."):
-        st.session_state.analysis_result = run_full_update(
+        st.session_state.analysis_result = _run_full_update_compatible(
             config,
             generate_reports=generate_reports,
             include_sector_rotation=include_sector_rotation,
@@ -723,7 +738,7 @@ def _run_update_with_extra_symbols(config: dict, extra_symbols: list[str]) -> No
     temporary_config["watchlist"] = merged_watchlist
 
     with st.spinner("Eigene Watchlist wird analysiert..."):
-        st.session_state.analysis_result = run_full_update(
+        st.session_state.analysis_result = _run_full_update_compatible(
             temporary_config,
             generate_reports=False,
             include_sector_rotation=False,
