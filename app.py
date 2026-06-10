@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Optional
 
 import duckdb
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 from main import run_evening_analysis
@@ -49,6 +51,7 @@ from modules.broker_router import broker_status, execution_plan, provider_matrix
 from modules.backtester import BACKTEST_SETUPS, BacktestSettings, Backtester
 from modules.data_provider import DataProvider
 from modules.indicators import add_indicators
+from modules.market_regime import evaluate_market_regime, write_market_regime_reports
 from modules.online_ops import (
     build_cloud_backup,
     build_health_report,
@@ -106,7 +109,11 @@ SYSTEM_ALERT_COLOR = "#ff2bd6"
 DEV_LOGIN_EMAIL = "dev@local"
 DASHBOARD_WATCHLIST_NAME = "Hauptliste"
 CHART_SYSTEM_TOOLS = [
+    "Linien",
     "Beobachtung",
+    "EMA Signale",
+    "RSI",
+    "Relative Staerke",
     "Fibonacci",
     "Alligator",
     "Order Blocks",
@@ -624,7 +631,7 @@ def main() -> None:
     st.set_page_config(
         page_title="Analyse Market Sensei Cut",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     apply_responsive_css()
 
@@ -642,11 +649,24 @@ def main() -> None:
     _ensure_result(config, app_env)
     _refresh_tracking_snapshots(config)
     _sync_alert_history(config)
-    page = render_sidebar_navigation(app_env)
+    page = render_top_navigation(app_env)
     render_header(app_env=app_env, page=page)
     render_account_bar()
     render_mode_banner(config, app_env)
+    layout_left, layout_main = st.columns([0.30, 0.70], gap="large")
 
+    with layout_left:
+        render_market_price_rail(
+            config,
+            st.session_state.analysis_result,
+            key_prefix="market_price_rail",
+        )
+    with layout_main:
+        render_selected_page(page, config, app_env)
+    render_footer()
+
+
+def render_selected_page(page: str, config: dict, app_env: str) -> None:
     if page == "Heute ansehen":
         render_today_home(config, app_env, key_prefix="today_home")
     elif page == "Workspace":
@@ -657,6 +677,8 @@ def main() -> None:
         render_watchlist(config, key_prefix="watchlist")
     elif page == "Sektorrotation":
         render_sector_rotation(config, key_prefix="sector_rotation")
+    elif page == "Market Regime":
+        render_market_regime(config, key_prefix="market_regime")
     elif page == "Backtesting":
         render_backtesting(config, key_prefix="backtesting")
     elif page == "Papertrading":
@@ -671,7 +693,6 @@ def main() -> None:
         render_online_operations(config, app_env, key_prefix="online_ops")
     elif page == "Settings":
         render_settings(app_env, key_prefix="settings")
-    render_footer()
 
 
 def inject_runtime_secrets(config: dict) -> dict:
@@ -795,36 +816,36 @@ def apply_responsive_css() -> None:
         <style>
         :root {
             --sensei-alert: #ff2bd6;
-            --sensei-alert-soft: rgba(255, 43, 214, 0.14);
-            --sensei-alert-line: rgba(255, 43, 214, 0.46);
-            --sensei-bg: #070a0f;
-            --sensei-panel: #0f141b;
-            --sensei-panel-2: #141a23;
-            --sensei-line: rgba(148, 163, 184, 0.18);
-            --sensei-text: #eef2f7;
-            --sensei-muted: #96a3b8;
-            --sensei-green: #22c55e;
-            --sensei-blue: #38bdf8;
-            --sensei-yellow: #facc15;
-            --sensei-gray: #94a3b8;
-            --sensei-red: #f43f5e;
+            --sensei-alert-soft: rgba(255, 43, 214, 0.10);
+            --sensei-alert-line: rgba(255, 43, 214, 0.36);
+            --sensei-bg: #000000;
+            --sensei-panel: #111113;
+            --sensei-panel-2: #1c1c1e;
+            --sensei-panel-3: #242426;
+            --sensei-line: rgba(255, 255, 255, 0.11);
+            --sensei-text: #f5f5f7;
+            --sensei-muted: #a1a1a6;
+            --sensei-green: #30d158;
+            --sensei-blue: #0a84ff;
+            --sensei-yellow: #ffd60a;
+            --sensei-gray: #8e8e93;
+            --sensei-red: #ff453a;
         }
         .stApp {
-            background: radial-gradient(circle at top left, rgba(255,43,214,0.08), transparent 28rem),
-                        linear-gradient(180deg, #070a0f 0%, #0a0f16 100%);
+            background: var(--sensei-bg);
             color: var(--sensei-text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, sans-serif;
         }
         .block-container {
-            padding-top: 1.2rem;
+            padding-top: 1rem;
             padding-bottom: 2rem;
-            max-width: 1480px;
+            max-width: 1540px;
         }
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #090d13 0%, #0e141d 100%);
-            border-right: 1px solid var(--sensei-line);
+            display: none;
         }
-        [data-testid="stSidebar"] * {
-            color: var(--sensei-text);
+        [data-testid="collapsedControl"] {
+            display: none;
         }
         h1, h2, h3, h4, h5, h6, p, label, span {
             color: var(--sensei-text);
@@ -834,12 +855,12 @@ def apply_responsive_css() -> None:
             color: var(--sensei-muted);
         }
         .sensei-hero {
-            border: 1px solid rgba(255, 43, 214, 0.22);
+            border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 1.1rem 1.2rem;
             margin-bottom: 1rem;
-            background: linear-gradient(135deg, rgba(20, 26, 35, 0.96), rgba(10, 15, 22, 0.96));
-            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+            background: linear-gradient(180deg, rgba(28, 28, 30, 0.96), rgba(17, 17, 19, 0.96));
+            box-shadow: none;
         }
         .sensei-hero-top {
             display: flex;
@@ -847,6 +868,108 @@ def apply_responsive_css() -> None:
             justify-content: space-between;
             gap: 1rem;
             flex-wrap: wrap;
+        }
+        .sensei-site-nav {
+            border: 1px solid var(--sensei-line);
+            border-radius: 8px;
+            padding: 0.75rem;
+            margin-bottom: 0.9rem;
+            background: rgba(17, 17, 19, 0.92);
+            box-shadow: none;
+        }
+        .sensei-site-nav-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.6rem;
+        }
+        .sensei-site-brand {
+            font-size: 1.08rem;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+        }
+        .sensei-site-brand span {
+            color: var(--sensei-alert);
+        }
+        .sensei-site-meta {
+            color: var(--sensei-muted);
+            font-size: 0.78rem;
+            font-weight: 800;
+        }
+        .sensei-account-strip {
+            border: 1px solid var(--sensei-line);
+            border-radius: 8px;
+            padding: 0.58rem 0.7rem;
+            margin-bottom: 0.9rem;
+            background: rgba(17, 17, 19, 0.78);
+        }
+        .sensei-market-rail-head {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            border: 1px solid var(--sensei-line);
+            border-radius: 8px;
+            padding: 0.75rem;
+            background: rgba(17, 17, 19, 0.96);
+            margin-bottom: 0.75rem;
+        }
+        .sensei-market-rail-title {
+            font-size: 1rem;
+            font-weight: 900;
+            line-height: 1.2;
+        }
+        .sensei-market-rail-subtitle {
+            color: var(--sensei-muted);
+            font-size: 0.78rem;
+            margin-top: 0.2rem;
+            line-height: 1.35;
+        }
+        .sensei-market-section {
+            color: var(--sensei-alert);
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin: 0.85rem 0 0.4rem;
+        }
+        .sensei-market-row {
+            border: 1px solid var(--sensei-line);
+            border-radius: 8px;
+            padding: 0.62rem 0.66rem;
+            margin-bottom: 0.42rem;
+            background: rgba(28, 28, 30, 0.74);
+        }
+        .sensei-market-row:hover {
+            border-color: rgba(255, 255, 255, 0.22);
+            background: rgba(36, 36, 38, 0.92);
+        }
+        .sensei-market-row-top,
+        .sensei-market-row-bottom {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.55rem;
+        }
+        .sensei-market-symbol {
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            word-break: break-word;
+        }
+        .sensei-market-price {
+            font-size: 0.96rem;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        .sensei-market-label,
+        .sensei-market-meta {
+            color: var(--sensei-muted);
+            font-size: 0.76rem;
+            line-height: 1.35;
+        }
+        .sensei-market-meta {
+            margin-top: 0.32rem;
         }
         .sensei-kicker {
             color: var(--sensei-alert);
@@ -870,16 +993,46 @@ def apply_responsive_css() -> None:
         .sensei-score-card,
         .sensei-sync-card,
         .sensei-table-card,
+        .sensei-mini-card,
         .sensei-alert-card {
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
-            background: linear-gradient(180deg, rgba(20, 26, 35, 0.98), rgba(13, 18, 26, 0.98));
+            background: linear-gradient(180deg, rgba(28, 28, 30, 0.96), rgba(17, 17, 19, 0.96));
             padding: 0.95rem;
-            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+            box-shadow: none;
         }
         .sensei-alert-card {
             border-color: rgba(255, 43, 214, 0.28);
             margin-bottom: 0.65rem;
+        }
+        .sensei-mini-card {
+            min-height: 7rem;
+        }
+        .sensei-card-label {
+            color: var(--sensei-muted);
+            font-size: 0.72rem;
+            font-weight: 850;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.75rem;
+        }
+        .sensei-card-value {
+            color: var(--sensei-text);
+            font-size: 0.98rem;
+            line-height: 1.45;
+            word-break: break-word;
+        }
+        .sensei-callout {
+            border: 1px solid var(--sensei-line);
+            border-radius: 8px;
+            padding: 0.95rem 1rem;
+            background: rgba(28, 28, 30, 0.76);
+            margin: 0.85rem 0 1rem;
+            line-height: 1.55;
+        }
+        .sensei-alert-callout {
+            border-color: var(--sensei-alert-line);
+            background: var(--sensei-alert-soft);
         }
         .sensei-mobile-only,
         .sensei-mobile-card-grid {
@@ -889,7 +1042,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.75rem;
-            background: rgba(20, 26, 35, 0.9);
+            background: rgba(28, 28, 30, 0.86);
             margin-bottom: 0.6rem;
         }
         .sensei-mobile-card-active {
@@ -949,14 +1102,14 @@ def apply_responsive_css() -> None:
         .sensei-guidance-card {
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
-            background: linear-gradient(180deg, rgba(20, 26, 35, 0.98), rgba(10, 15, 22, 0.98));
+            background: linear-gradient(180deg, rgba(28, 28, 30, 0.96), rgba(17, 17, 19, 0.96));
             padding: 0.95rem;
             min-height: 136px;
-            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+            box-shadow: none;
         }
         .sensei-guidance-card-pink {
             border-color: rgba(255, 43, 214, 0.34);
-            background: linear-gradient(180deg, rgba(255, 43, 214, 0.11), rgba(13, 18, 26, 0.98));
+            background: linear-gradient(180deg, rgba(255, 43, 214, 0.09), rgba(17, 17, 19, 0.96));
         }
         .sensei-guidance-label {
             color: var(--sensei-muted);
@@ -982,7 +1135,7 @@ def apply_responsive_css() -> None:
             border-radius: 8px;
             padding: 1rem;
             margin: 0.75rem 0 1rem;
-            background: rgba(20, 26, 35, 0.92);
+            background: rgba(28, 28, 30, 0.82);
         }
         .sensei-traffic-ok {
             border-color: rgba(34, 197, 94, 0.5);
@@ -1012,7 +1165,7 @@ def apply_responsive_css() -> None:
             border: 1px solid rgba(255, 43, 214, 0.22);
             border-radius: 8px;
             padding: 0.85rem;
-            background: rgba(20, 26, 35, 0.84);
+            background: rgba(28, 28, 30, 0.82);
             min-height: 118px;
         }
         .sensei-topic-title {
@@ -1119,10 +1272,10 @@ def apply_responsive_css() -> None:
             font-size: 0.86rem;
         }
         .sensei-feature-strip {
-            border: 1px solid rgba(255, 43, 214, 0.2);
+            border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.65rem;
-            background: rgba(20, 26, 35, 0.58);
+            background: rgba(17, 17, 19, 0.70);
             display: flex;
             flex-wrap: wrap;
             gap: 0.42rem;
@@ -1132,7 +1285,7 @@ def apply_responsive_css() -> None:
             border: 1px solid rgba(148, 163, 184, 0.22);
             border-radius: 999px;
             padding: 0.28rem 0.58rem;
-            background: rgba(8, 12, 18, 0.72);
+            background: rgba(28, 28, 30, 0.84);
             color: var(--sensei-muted);
             font-size: 0.76rem;
             font-weight: 800;
@@ -1145,7 +1298,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.9rem;
-            background: rgba(20, 26, 35, 0.76);
+            background: rgba(17, 17, 19, 0.78);
         }
         .sensei-table {
             width: 100%;
@@ -1176,7 +1329,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.85rem;
-            background: rgba(13, 18, 26, 0.88);
+            background: rgba(17, 17, 19, 0.88);
             margin-bottom: 0.85rem;
         }
         .sensei-fullscreen-panel {
@@ -1186,8 +1339,143 @@ def apply_responsive_css() -> None:
             border: 1px solid rgba(255, 43, 214, 0.28);
             border-radius: 8px;
             padding: 0.7rem 0.75rem;
-            background: rgba(255, 43, 214, 0.06);
+            background: rgba(255, 43, 214, 0.055);
             margin: 0.35rem 0 0.75rem;
+        }
+        .sensei-chart-top-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(250px, 320px);
+            gap: 0.85rem;
+            align-items: stretch;
+            margin-bottom: 0.75rem;
+        }
+        .sensei-chart-score-box {
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            padding: 0.85rem;
+            background: linear-gradient(180deg, rgba(36, 36, 38, 0.96), rgba(17, 17, 19, 0.96));
+            min-height: 100%;
+        }
+        div[data-testid="stPopover"] > button {
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 8px;
+            padding: 0.95rem 1rem;
+            min-height: 5.8rem;
+            width: 100%;
+            justify-content: flex-start;
+            background: linear-gradient(180deg, rgba(42, 42, 44, 0.98), rgba(14, 14, 16, 0.98));
+            color: #ffffff;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+        div[data-testid="stPopover"] > button:hover,
+        div[data-testid="stPopover"] > button:focus {
+            border-color: rgba(255, 255, 255, 0.38);
+            background: linear-gradient(180deg, rgba(52, 52, 55, 0.98), rgba(18, 18, 20, 0.98));
+        }
+        div[data-testid="stPopover"] > button p {
+            color: #ffffff;
+            font-size: 1.35rem;
+            line-height: 1.1;
+            font-weight: 950;
+            letter-spacing: 0.01em;
+        }
+        .sensei-chart-score-label {
+            color: var(--sensei-muted);
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+        .sensei-chart-score-value {
+            color: #ffffff;
+            font-size: 2.5rem;
+            line-height: 1;
+            font-weight: 950;
+            letter-spacing: 0.01em;
+            margin: 0.35rem 0 0.55rem;
+        }
+        .sensei-score-breakdown {
+            border-top: 1px solid rgba(255, 255, 255, 0.09);
+            padding-top: 0.55rem;
+            display: grid;
+            gap: 0.32rem;
+        }
+        .sensei-score-breakdown-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.65rem;
+            color: var(--sensei-muted);
+            font-size: 0.76rem;
+            line-height: 1.2;
+        }
+        .sensei-score-breakdown-points {
+            color: #ffffff;
+            font-weight: 900;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .sensei-score-breakdown-note {
+            color: var(--sensei-muted);
+            font-size: 0.74rem;
+            line-height: 1.35;
+            margin-top: 0.5rem;
+        }
+        .sensei-score-popover-head {
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 0.75rem;
+            background: rgba(28, 28, 30, 0.92);
+            margin-bottom: 0.65rem;
+        }
+        .sensei-timeframe-trend-strip {
+            display: flex;
+            align-items: stretch;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+            margin: 0.55rem 0 0.65rem;
+        }
+        .sensei-timeframe-trend-chip {
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 0.45rem 0.55rem;
+            min-width: 94px;
+            background: rgba(28, 28, 30, 0.78);
+        }
+        .sensei-timeframe-trend-chip.active {
+            border-color: rgba(255, 255, 255, 0.42);
+            background: rgba(255, 255, 255, 0.075);
+        }
+        .sensei-timeframe-label {
+            color: var(--sensei-muted);
+            font-size: 0.68rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .sensei-timeframe-direction {
+            font-size: 0.9rem;
+            font-weight: 950;
+            line-height: 1.15;
+            margin-top: 0.14rem;
+        }
+        .sensei-timeframe-direction.bullish {
+            color: #30d158;
+        }
+        .sensei-timeframe-direction.bearish {
+            color: #ff453a;
+        }
+        .sensei-timeframe-direction.neutral {
+            color: #ffd60a;
+        }
+        .sensei-timeframe-direction.unknown {
+            color: var(--sensei-muted);
+        }
+        .sensei-timeframe-score {
+            color: var(--sensei-muted);
+            font-size: 0.7rem;
+            margin-top: 0.12rem;
+            white-space: nowrap;
         }
         .sensei-chart-toolbar-title {
             display: flex;
@@ -1201,10 +1489,10 @@ def apply_responsive_css() -> None:
             color: var(--sensei-alert);
         }
         .sensei-workbench-shell {
-            border: 1px solid rgba(255, 43, 214, 0.18);
+            border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.85rem;
-            background: rgba(8, 12, 18, 0.72);
+            background: rgba(0, 0, 0, 0.32);
             margin-bottom: 1rem;
         }
         .sensei-watchlist-header {
@@ -1223,12 +1511,12 @@ def apply_responsive_css() -> None:
             border-radius: 8px;
             padding: 0.55rem 0.6rem;
             margin-bottom: 0.45rem;
-            background: rgba(20, 26, 35, 0.76);
+            background: rgba(28, 28, 30, 0.72);
         }
         .sensei-watch-row-active {
             border-color: var(--sensei-alert);
-            box-shadow: 0 0 0 1px rgba(255, 43, 214, 0.16);
-            background: rgba(255, 43, 214, 0.08);
+            box-shadow: none;
+            background: rgba(255, 43, 214, 0.075);
         }
         .sensei-watch-symbol {
             font-weight: 850;
@@ -1248,7 +1536,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.8rem 0.9rem;
-            background: rgba(20, 26, 35, 0.86);
+            background: rgba(28, 28, 30, 0.82);
             margin-bottom: 0.75rem;
         }
         .sensei-chart-workspace-title {
@@ -1292,7 +1580,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.75rem 0.85rem;
-            background: rgba(20, 26, 35, 0.88);
+            background: rgba(28, 28, 30, 0.82);
             margin: 0.35rem 0 0.75rem 0;
         }
         .sensei-terminal-row {
@@ -1353,17 +1641,21 @@ def apply_responsive_css() -> None:
         .stDownloadButton > button,
         button[kind="primary"] {
             border-radius: 8px;
-            border: 1px solid rgba(255, 43, 214, 0.34);
-            background: rgba(20, 26, 35, 0.98);
+            border: 1px solid var(--sensei-line);
+            background: rgba(28, 28, 30, 0.96);
             color: var(--sensei-text);
             min-height: 2.8rem;
             font-weight: 800;
         }
+        button[kind="primary"] {
+            border-color: rgba(255, 43, 214, 0.34);
+            background: linear-gradient(180deg, rgba(255, 43, 214, 0.16), rgba(36, 36, 38, 0.94));
+        }
         .stButton > button:hover,
         .stDownloadButton > button:hover {
-            border-color: var(--sensei-alert);
+            border-color: rgba(255, 255, 255, 0.28);
             color: white;
-            background: rgba(255, 43, 214, 0.12);
+            background: rgba(44, 44, 46, 0.96);
         }
         div[data-testid="stDataFrame"] {
             border: 1px solid var(--sensei-line);
@@ -1377,7 +1669,7 @@ def apply_responsive_css() -> None:
             border: 1px solid var(--sensei-line);
             border-radius: 8px;
             padding: 0.75rem;
-            background: rgba(20, 26, 35, 0.88);
+            background: rgba(28, 28, 30, 0.82);
         }
         [data-testid="stMetricLabel"] p {
             color: var(--sensei-muted);
@@ -1445,6 +1737,18 @@ def apply_responsive_css() -> None:
             .sensei-title {
                 font-size: 1.5rem;
             }
+            .sensei-site-nav {
+                padding: 0.6rem;
+            }
+            .sensei-site-brand {
+                font-size: 0.98rem;
+            }
+            .sensei-market-rail-head {
+                position: static;
+            }
+            .sensei-market-row {
+                padding: 0.72rem;
+            }
             .sensei-score-card {
                 min-height: 120px;
             }
@@ -1474,6 +1778,12 @@ def apply_responsive_css() -> None:
             }
             .sensei-chart-workspace-title {
                 font-size: 1rem;
+            }
+            .sensei-chart-top-grid {
+                grid-template-columns: 1fr;
+            }
+            .sensei-chart-score-value {
+                font-size: 2.1rem;
             }
             .sensei-feature-strip {
                 gap: 0.3rem;
@@ -1512,35 +1822,323 @@ def render_header(app_env: str = "local", page: str = "") -> None:
     )
 
 
-def render_sidebar_navigation(app_env: str) -> str:
-    with st.sidebar:
-        st.markdown("### Sensei Cut")
-        st.caption("Navigation")
-        pages = [
-            "Heute ansehen",
-            "Dashboard",
-            "Workspace",
-            "Watchlist",
-            "Sektorrotation",
-            "Backtesting",
-            "Papertrading",
-            "Real Money",
-            "Reports",
-            "Updates",
-            "Online-Betrieb",
-            "Settings",
-        ]
-        page = st.radio(
-            "Bereich",
-            pages,
-            key=make_key("navigation", "page"),
-            label_visibility="collapsed",
+def app_pages() -> list[str]:
+    return [
+        "Heute ansehen",
+        "Dashboard",
+        "Workspace",
+        "Watchlist",
+        "Sektorrotation",
+        "Market Regime",
+        "Backtesting",
+        "Papertrading",
+        "Real Money",
+        "Reports",
+        "Updates",
+        "Online-Betrieb",
+        "Settings",
+    ]
+
+
+def current_navigation_page() -> str:
+    pages = app_pages()
+    current = str(st.session_state.get("navigation_page", pages[0]))
+    if current not in pages:
+        current = pages[0]
+        st.session_state.navigation_page = current
+    return current
+
+
+def render_top_navigation(app_env: str) -> str:
+    pages = app_pages()
+    current = current_navigation_page()
+    mode = "Cloud" if is_cloud_env(app_env) else "Local"
+    nav_col, clock_col = st.columns([0.76, 0.24], gap="large")
+    with nav_col:
+        st.markdown(
+            f"""
+            <div class="sensei-site-nav">
+                <div class="sensei-site-nav-top">
+                    <div>
+                        <div class="sensei-site-brand">Analyse Market <span>Sensei Cut</span></div>
+                        <div class="sensei-site-meta">Website-Navigation oben · Analyse-only · keine Orders</div>
+                    </div>
+                    <div>{status_badge_html(mode, "blue")}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        st.divider()
-        st.caption(f"APP_ENV: {app_env}")
-        if st.session_state.get("dev_login_active") and dev_login_available(app_env):
-            render_status_badge("Dev Login aktiv", "pink")
-    return page
+    with clock_col:
+        render_live_market_clock()
+    primary_pages = pages[:7]
+    utility_pages = pages[7:]
+    for group_index, group in enumerate([primary_pages, utility_pages]):
+        columns = st.columns(len(group), gap="small")
+        for index, page in enumerate(group):
+            with columns[index]:
+                if st.button(
+                    page,
+                    key=make_key("top_navigation", group_index, page),
+                    width="stretch",
+                    type="primary" if page == current else "secondary",
+                ):
+                    st.session_state.navigation_page = page
+                    st.rerun()
+    return current
+
+
+def render_live_market_clock() -> None:
+    components.html(
+        """
+        <div class="sensei-clock-card">
+            <div class="sensei-clock-label">Market Time</div>
+            <div id="sensei-live-clock-time" class="sensei-clock-time">--:--:--</div>
+            <div id="sensei-live-clock-date" class="sensei-clock-date">Lokale Zeit</div>
+        </div>
+        <style>
+            html, body {
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+                background: transparent;
+                font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, sans-serif;
+            }
+            .sensei-clock-card {
+                box-sizing: border-box;
+                width: 100%;
+                min-height: 92px;
+                border: 1px solid rgba(255, 69, 58, 0.38);
+                border-radius: 8px;
+                padding: 0.72rem 0.82rem;
+                background: linear-gradient(180deg, rgba(28, 28, 30, 0.96), rgba(17, 17, 19, 0.96));
+            }
+            .sensei-clock-label {
+                color: #a1a1a6;
+                font-size: 0.72rem;
+                font-weight: 900;
+                letter-spacing: 0.11em;
+                text-transform: uppercase;
+                line-height: 1;
+                margin-bottom: 0.42rem;
+            }
+            .sensei-clock-time {
+                color: #ff453a;
+                font-size: clamp(1.85rem, 4.4vw, 2.55rem);
+                font-weight: 950;
+                line-height: 1;
+                letter-spacing: 0.02em;
+                font-variant-numeric: tabular-nums;
+                text-align: right;
+                text-shadow: 0 0 18px rgba(255, 69, 58, 0.12);
+            }
+            .sensei-clock-date {
+                color: #a1a1a6;
+                font-size: 0.76rem;
+                font-weight: 750;
+                margin-top: 0.38rem;
+                text-align: right;
+                white-space: nowrap;
+            }
+            @media (max-width: 760px) {
+                .sensei-clock-card {
+                    min-height: 78px;
+                    padding: 0.62rem 0.72rem;
+                }
+                .sensei-clock-time {
+                    font-size: 1.95rem;
+                    text-align: left;
+                }
+                .sensei-clock-date {
+                    text-align: left;
+                }
+            }
+        </style>
+        <script>
+            const timeTarget = document.getElementById("sensei-live-clock-time");
+            const dateTarget = document.getElementById("sensei-live-clock-date");
+            const timeFormatter = new Intl.DateTimeFormat("de-DE", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: false
+            });
+            const dateFormatter = new Intl.DateTimeFormat("de-DE", {
+                weekday: "short",
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric"
+            });
+            function updateSenseiClock() {
+                const now = new Date();
+                timeTarget.textContent = timeFormatter.format(now);
+                dateTarget.textContent = dateFormatter.format(now);
+            }
+            updateSenseiClock();
+            const delay = 1000 - new Date().getMilliseconds();
+            setTimeout(() => {
+                updateSenseiClock();
+                setInterval(updateSenseiClock, 1000);
+            }, delay);
+        </script>
+        """,
+        height=104,
+        scrolling=False,
+    )
+
+
+def render_market_price_rail(config: dict, result: dict, key_prefix: str) -> None:
+    timeframes = config.get("data", {}).get("timeframes", ["1d", "1wk", "1mo"])
+    if not timeframes:
+        timeframes = ["1d"]
+    timeframe_key = make_key(key_prefix, "timeframe")
+    if timeframe_key not in st.session_state:
+        st.session_state[timeframe_key] = timeframes[0]
+    selected_timeframe = st.selectbox(
+        "Marktlisten-Timeframe",
+        timeframes,
+        key=timeframe_key,
+        label_visibility="collapsed",
+    )
+    rows = market_price_rail_rows(config, result, selected_timeframe)
+    loaded_count = sum(1 for row in rows if row.get("has_data"))
+    st.markdown(
+        f"""
+        <div class="sensei-market-rail-head">
+            <div class="sensei-market-rail-title">Markt-Schnelluebersicht</div>
+            <div class="sensei-market-rail-subtitle">
+                Indizes, Aktien, Gold und Sektoren. {loaded_count}/{len(rows)} mit aktuellem Analysewert.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "Preise aktualisieren",
+        key=make_key(key_prefix, "refresh_prices"),
+        width="stretch",
+        type="primary",
+    ):
+        _run_update(config, generate_reports=False, include_sector_rotation=True)
+        st.rerun()
+
+    if not rows:
+        render_empty_state("Keine Symbole", "In config.json sind noch keine Maerkte hinterlegt.")
+        return
+
+    try:
+        rail_container = st.container(height=720, border=False)
+    except TypeError:
+        rail_container = st.container()
+
+    current_section = ""
+    with rail_container:
+        for index, row in enumerate(rows):
+            section = str(row.get("category") or "Maerkte")
+            if section != current_section:
+                current_section = section
+                st.markdown(
+                    f"<div class='sensei-market-section'>{escape(current_section)}</div>",
+                    unsafe_allow_html=True,
+                )
+            render_market_price_rail_row(row)
+            open_label = f"{row.get('label') or row['ticker']} | {row['ticker']} ansehen"
+            if st.button(
+                open_label,
+                key=make_key(key_prefix, "open_chart", index, safe_widget_key(row["ticker"])),
+                width="stretch",
+            ):
+                st.session_state.navigation_page = "Dashboard"
+                st.session_state[make_key("dashboard", "timeframe_state")] = selected_timeframe
+                st.session_state[make_key("dashboard", "watchlist_workbench", "selected_ticker")] = row[
+                    "ticker"
+                ]
+                st.session_state.workspace_ticker = row["ticker"]
+                st.session_state.workspace_timeframe = selected_timeframe
+                st.rerun()
+
+
+def market_price_rail_rows(config: dict, result: dict, timeframe: str) -> list[dict]:
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    def add(label: str, ticker: str, category: str) -> None:
+        cleaned = str(ticker).strip().upper()
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        row = analysis_row_for_ticker(result, cleaned, timeframe)
+        close_value = safe_optional_float(row.get("close")) if row else None
+        score_value = safe_optional_float(row.get("score")) if row else None
+        entries.append(
+            {
+                "label": str(label or cleaned),
+                "ticker": cleaned,
+                "category": str(category or "Maerkte"),
+                "close": close_value,
+                "score": score_value,
+                "trend": str(row.get("trend", "nicht analysiert")) if row else "nicht analysiert",
+                "risk_state": str(row.get("risk_state", "offen")) if row else "offen",
+                "data_status": str(row.get("data_status", "keine Daten")) if row else "keine Daten",
+                "has_data": bool(row),
+            }
+        )
+
+    for item in dashboard_seed_symbols(config):
+        add(item.get("label", item.get("ticker", "")), item.get("ticker", ""), item.get("category", "Maerkte"))
+
+    for item in config.get("sector_rotation_symbols", DEFAULT_SECTOR_ROTATION_SYMBOLS):
+        if isinstance(item, dict):
+            add(item.get("label", item.get("ticker", "")), item.get("ticker", ""), item.get("category", "Sektoren"))
+        else:
+            add(str(item), str(item), "Sektoren")
+
+    category_order = {
+        "Indizes": 0,
+        "Gold": 1,
+        "Aktien": 2,
+        "US Sektoren": 3,
+        "Bau": 4,
+        "Themen": 5,
+        "Rohstoffe": 6,
+        "Krypto": 7,
+        "Waehrung": 8,
+        "Treasuries": 9,
+        "Treasury Yields": 10,
+    }
+    return sorted(entries, key=lambda row: (category_order.get(str(row["category"]), 99), row["label"]))
+
+
+def render_market_price_rail_row(row: dict) -> None:
+    ticker = str(row.get("ticker", ""))
+    label = str(row.get("label") or ticker)
+    close = row.get("close")
+    price_text = "--" if close is None else f"{safe_float(close):,.2f}"
+    score = row.get("score")
+    score_text = "--" if score is None else f"{int(safe_float(score))}/100"
+    trend = str(row.get("trend", "nicht analysiert"))
+    risk_state = str(row.get("risk_state", "offen"))
+    data_status = str(row.get("data_status", "keine Daten"))
+    st.markdown(
+        f"""
+        <div class="sensei-market-row">
+            <div class="sensei-market-row-top">
+                <div>
+                    <div class="sensei-market-symbol">{escape(ticker)}</div>
+                    <div class="sensei-market-label">{escape(label)}</div>
+                </div>
+                <div class="sensei-market-price">{escape(price_text)}</div>
+            </div>
+            <div class="sensei-market-row-bottom sensei-market-meta">
+                <span>Score {escape(score_text)}</span>
+                <span>{escape(trend)}</span>
+                <span>{escape(risk_state)}</span>
+            </div>
+            <div class="sensei-market-meta">Daten: {escape(data_status)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def score_tier(score: float) -> tuple[str, str, str]:
@@ -2809,42 +3407,40 @@ def render_dashboard_selected_chart(
         ),
         unsafe_allow_html=True,
     )
-    if row:
-        score_value = safe_float(row.get("score"), 0)
-        score_badge = status_badge_html(
-            f"{int(score_value)}/100",
-            score_tier(score_value)[2],
-        )
-        trend_badge = status_badge_html(
-            str(row.get("trend", "neutral")),
-            status_color(row.get("trend", "neutral")),
-        )
-        risk_badge = status_badge_html(
-            str(row.get("risk_state", "offen")),
-            status_color(row.get("risk_state", "offen")),
-        )
-        data_badge = status_badge_html(
-            f"Daten {row.get('data_status', 'unbekannt')}",
-            data_status_color(str(row.get("data_status", "unbekannt"))),
-        )
-        st.markdown(
-            f"{score_badge} {trend_badge} {risk_badge} {data_badge}",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.info("Noch keine Analyse fuer dieses Symbol. Klicke links auf Hauptliste analysieren.")
-
-    control_col, mode_col = st.columns([0.66, 0.34], gap="large")
-    with control_col:
+    top_left, top_right = st.columns([0.64, 0.36], gap="large")
+    with top_left:
+        if row:
+            trend_badge = status_badge_html(
+                str(row.get("trend", "neutral")),
+                status_color(row.get("trend", "neutral")),
+            )
+            risk_badge = status_badge_html(
+                str(row.get("risk_state", "offen")),
+                status_color(row.get("risk_state", "offen")),
+            )
+            data_badge = status_badge_html(
+                f"Daten {row.get('data_status', 'unbekannt')}",
+                data_status_color(str(row.get("data_status", "unbekannt"))),
+            )
+            st.markdown(
+                f"{trend_badge} {risk_badge} {data_badge}",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Noch keine Analyse fuer dieses Symbol. Klicke links auf Hauptliste analysieren.")
         render_timeframe_buttons(
             config.get("data", {}).get("timeframes", ["1d", "1wk", "1mo"]),
             timeframe_state_key,
             key_prefix=make_key(key_prefix, "timeframe_buttons", safe_widget_key(selected_ticker)),
+            result=result,
+            ticker=selected_ticker,
         )
-    with mode_col:
-        st.checkbox(
-            "Vollbild Arbeitsflaeche",
-            key=fullscreen_key,
+        render_timeframe_trend_strip(
+            config,
+            result,
+            selected_ticker,
+            timeframe,
+            key_prefix=make_key(key_prefix, "timeframe_trends", safe_widget_key(selected_ticker)),
         )
         chart_type = st.radio(
             "Charttyp",
@@ -2852,6 +3448,12 @@ def render_dashboard_selected_chart(
             horizontal=True,
             key=make_key(key_prefix, "chart_type", safe_widget_key(selected_ticker), timeframe),
         )
+        st.checkbox(
+            "Vollbild Arbeitsflaeche",
+            key=fullscreen_key,
+        )
+    with top_right:
+        render_chart_score_box(row, key_prefix=make_key(key_prefix, "score_box", selected_ticker, timeframe))
 
     if fullscreen_mode:
         st.markdown("<div class='sensei-fullscreen-panel'>", unsafe_allow_html=True)
@@ -2876,6 +3478,79 @@ def render_dashboard_selected_chart(
 
     if fullscreen_mode:
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_chart_score_box(row: dict, key_prefix: str) -> None:
+    if not row:
+        with st.popover(
+            "Bewertung --/100",
+            help="Klicken fuer die Punkte-Erklaerung. Klick ausserhalb schliesst.",
+            use_container_width=True,
+        ):
+            st.info("Starte eine Analyse, damit die Punkte-Bausteine geladen werden.")
+        return
+
+    score = int(safe_float(row.get("score"), 0))
+    breakdown = chart_score_breakdown(row)
+    rows_html = "".join(
+        (
+            "<div class='sensei-score-breakdown-row'>"
+            f"<span>{escape(label)}</span>"
+            f"<span class='sensei-score-breakdown-points'>{int(points)}</span>"
+            "</div>"
+        )
+        for label, points in breakdown
+    )
+    explanation = chart_score_explanation(row)
+    with st.popover(
+        f"Bewertung {score}/100",
+        help="Klicken fuer die Punkte-Erklaerung. Klick ausserhalb schliesst.",
+        use_container_width=True,
+    ):
+        st.markdown(
+            f"""
+            <div class="sensei-score-popover-head">
+                <div class="sensei-chart-score-label">Bewertung</div>
+                <div class="sensei-chart-score-value">{score}/100</div>
+                <div class="sensei-score-breakdown-note">{escape(explanation)}</div>
+            </div>
+            <div class="sensei-score-breakdown">{rows_html}</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def chart_score_breakdown(row: dict) -> list[tuple[str, int]]:
+    items = [
+        ("SPY Trend", row.get("spy_trend_points")),
+        ("QQQ Trend", row.get("qqq_trend_points")),
+        ("SPY + QQQ", row.get("market_alignment_points")),
+        ("Mag7", row.get("mag7_points")),
+        ("Sektor-Staerke", row.get("sector_strength_points")),
+        ("EMA20", row.get("ema20_points")),
+        ("EMA50", row.get("ema50_points")),
+        ("EMA100", row.get("ema100_points")),
+        ("EMA200", row.get("ema200_points")),
+        ("Relative Staerke", row.get("relative_strength_points")),
+        ("Trendfolge", row.get("trend_following_points")),
+    ]
+    return [(label, int(safe_float(value, 0))) for label, value in items]
+
+
+def chart_score_explanation(row: dict) -> str:
+    trend = str(row.get("trend", "offen"))
+    risk = str(row.get("risk_state", "offen"))
+    close = safe_optional_float(row.get("close"))
+    ema20 = safe_optional_float(row.get("ema_20"))
+    ema50 = safe_optional_float(row.get("ema_50"))
+    rs = safe_optional_float(row.get("relative_strength"))
+    parts = [f"Trend: {trend}", f"Risk State: {risk}"]
+    if close is not None and ema20 is not None and ema50 is not None:
+        ema_state = "ueber EMA20/50" if close > ema20 and close > ema50 else "nicht sauber ueber EMA20/50"
+        parts.append(ema_state)
+    if rs is not None:
+        parts.append(f"RS vs Benchmark: {rs:.2f}")
+    return " | ".join(parts)
 
 
 def ensure_dashboard_watchlist(config: dict, store: WorkspaceStore, email: str) -> str:
@@ -2940,6 +3615,19 @@ def dashboard_seed_symbols(config: dict) -> list[dict]:
         if cleaned and cleaned not in seen:
             seeds.append({"label": cleaned, "ticker": cleaned, "category": "Aktien"})
             seen.add(cleaned)
+
+    for entry in config.get("sector_rotation_symbols", DEFAULT_SECTOR_ROTATION_SYMBOLS):
+        if isinstance(entry, dict):
+            label = str(entry.get("label", entry.get("ticker", ""))).strip()
+            ticker = str(entry.get("ticker", label)).strip().upper()
+            category = str(entry.get("category", "Sektoren")).strip() or "Sektoren"
+        else:
+            label = str(entry).strip()
+            ticker = label.upper()
+            category = "Sektoren"
+        if ticker and ticker not in seen:
+            seeds.append({"label": label or ticker, "ticker": ticker, "category": category})
+            seen.add(ticker)
     return seeds
 
 
@@ -4700,20 +5388,127 @@ def render_quick_symbol_buttons(symbols: list[str], key_prefix: str) -> None:
                 st.rerun()
 
 
-def render_timeframe_buttons(timeframes: list[str], state_key: str, key_prefix: str) -> None:
-    st.caption("Timeframe")
+def render_timeframe_buttons(
+    timeframes: list[str],
+    state_key: str,
+    key_prefix: str,
+    result: Optional[dict] = None,
+    ticker: Optional[str] = None,
+) -> None:
     current = st.session_state.get(state_key, timeframes[0])
+    current_trend = timeframe_trend_value(result, ticker, current) if result and ticker else ""
+    caption = "Timeframe"
+    if current_trend:
+        caption = f"Timeframe · aktuell {timeframe_display_label(current)} {current_trend}"
+    st.caption(caption)
     columns = st.columns(max(1, len(timeframes)))
     for index, timeframe in enumerate(timeframes):
+        trend = timeframe_trend_value(result, ticker, timeframe) if result and ticker else ""
+        label = timeframe
+        if result and ticker:
+            suffix = trend if trend else "offen"
+            label = f"{timeframe_display_label(timeframe)} · {suffix}"
         with columns[index % len(columns)]:
             if st.button(
-                timeframe,
+                label,
                 key=make_key(key_prefix, "timeframe", index, timeframe),
                 type="primary" if timeframe == current else "secondary",
                 width="stretch",
             ):
                 st.session_state[state_key] = timeframe
                 st.rerun()
+
+
+def timeframe_display_label(timeframe: str) -> str:
+    labels = {
+        "1mo": "Monat",
+        "1wk": "Woche",
+        "1d": "Tag",
+        "4h": "4h",
+        "1h": "Stunde",
+        "30m": "30m",
+        "15m": "15m",
+    }
+    return labels.get(str(timeframe), str(timeframe))
+
+
+def timeframe_trend_value(result: Optional[dict], ticker: Optional[str], timeframe: str) -> str:
+    if not result or not ticker:
+        return ""
+    row = exact_analysis_row_for_ticker(result, ticker, timeframe)
+    return str(row.get("trend", "")).strip() if row else ""
+
+
+def timeframe_direction_class(trend: str) -> str:
+    text = str(trend).lower()
+    if text == "bullish":
+        return "bullish"
+    if text == "bearish":
+        return "bearish"
+    if text == "neutral":
+        return "neutral"
+    return "unknown"
+
+
+def render_timeframe_trend_strip(
+    config: dict,
+    result: dict,
+    ticker: str,
+    current_timeframe: str,
+    key_prefix: str,
+) -> None:
+    timeframes = timeframes_for_trend_strip(config, result, ticker)
+    if not timeframes:
+        return
+
+    chips = []
+    for timeframe in timeframes:
+        row = exact_analysis_row_for_ticker(result, ticker, timeframe)
+        trend = str(row.get("trend", "nicht geladen")) if row else "nicht geladen"
+        css_class = timeframe_direction_class(trend)
+        active_class = " active" if timeframe == current_timeframe else ""
+        score = safe_optional_float(row.get("score")) if row else None
+        score_text = f"{int(score)}/100" if score is not None else "kein Wert"
+        chips.append(
+            f"""
+            <div class="sensei-timeframe-trend-chip{active_class}">
+                <div class="sensei-timeframe-label">{escape(timeframe_display_label(timeframe))}</div>
+                <div class="sensei-timeframe-direction {escape(css_class)}">{escape(trend)}</div>
+                <div class="sensei-timeframe-score">{escape(str(timeframe))} · {escape(score_text)}</div>
+            </div>
+            """
+        )
+
+    st.markdown(
+        f"""
+        <div class="sensei-timeframe-trend-strip">
+            {''.join(chips)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def timeframes_for_trend_strip(config: dict, result: dict, ticker: str) -> list[str]:
+    configured = [str(item) for item in config.get("data", {}).get("timeframes", ["1d", "1wk", "1mo"])]
+    discovered = set(configured)
+    ticker_lookup = str(ticker).upper()
+    for key in result.get("histories", {}):
+        if "|" not in str(key):
+            continue
+        symbol, timeframe = str(key).split("|", 1)
+        if symbol.upper() == ticker_lookup:
+            discovered.add(timeframe)
+
+    combined = analysis_combined_frame(result)
+    if not combined.empty and {"ticker", "timeframe"}.issubset(combined.columns):
+        rows = combined[combined["ticker"].astype(str).str.upper() == ticker_lookup]
+        discovered.update(str(value) for value in rows["timeframe"].dropna().unique())
+
+    preferred_order = ["1mo", "1wk", "1d", "4h", "1h", "30m", "15m"]
+    ordered = [item for item in preferred_order if item in discovered]
+    ordered.extend(sorted(item for item in discovered if item not in preferred_order))
+    return ordered
 
 
 def render_save_topic_form(
@@ -5188,12 +5983,23 @@ def render_symbol_chart(
     ]
 
     show_volume = bool(active_tools.get("Volumen"))
+    show_rsi = bool(active_tools.get("RSI"))
+    show_relative_strength = bool(active_tools.get("Relative Staerke"))
+    panel_rows = []
+    if show_volume:
+        panel_rows.append("volume")
+    if show_rsi:
+        panel_rows.append("rsi")
+    if show_relative_strength:
+        panel_rows.append("relative_strength")
+    row_count = 1 + len(panel_rows)
+    row_heights = [0.68] + [0.16] * len(panel_rows) if panel_rows else [1.0]
     fig = make_subplots(
-        rows=2 if show_volume else 1,
+        rows=row_count,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.72, 0.28] if show_volume else [1.0],
+        vertical_spacing=0.025,
+        row_heights=row_heights,
     )
     if chart_type == "Linie":
         fig.add_trace(
@@ -5244,9 +6050,11 @@ def render_symbol_chart(
                 col=1,
             )
 
-    add_chart_line_traces(fig, chart_lines)
+    if active_tools.get("Linien", False):
+        add_chart_line_traces(fig, chart_lines)
     add_chart_system_overlays(fig, history, active_tools, row=row, timeframe=timeframe)
 
+    panel_row = 2
     if show_volume:
         fig.add_trace(
             go.Bar(
@@ -5256,9 +6064,17 @@ def render_symbol_chart(
                 marker_color=volume_colors,
                 opacity=0.45,
             ),
-            row=2,
+            row=panel_row,
             col=1,
         )
+        fig.update_yaxes(title_text="Volumen", row=panel_row, col=1)
+        panel_row += 1
+    if show_rsi:
+        add_rsi_panel(fig, history, panel_row)
+        panel_row += 1
+    if show_relative_strength:
+        add_relative_strength_panel(fig, config, result, ticker, timeframe, panel_row)
+        panel_row += 1
     fig.update_layout(
         title=f"{ticker} {chart_type} {timeframe}",
         height=height,
@@ -5280,17 +6096,17 @@ def render_symbol_chart(
         col=1,
     )
     fig.update_yaxes(title_text="Preis", row=1, col=1)
-    if show_volume:
-        fig.update_yaxes(title_text="Volumen", row=2, col=1)
+    chart_config = {
+        "scrollZoom": True,
+        "displaylogo": False,
+        "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+    }
+    if active_tools.get("Linien", False):
+        chart_config["modeBarButtonsToAdd"] = ["drawline", "eraseshape"]
     render_plotly_chart(
         fig,
         key=make_key(key_prefix, "plotly", ticker, timeframe),
-        config={
-            "scrollZoom": True,
-            "displaylogo": False,
-            "modeBarButtonsToAdd": ["drawline", "eraseshape"],
-            "modeBarButtonsToRemove": ["select2d", "lasso2d"],
-        },
+        config=chart_config,
     )
     render_chart_system_toolbar(
         key_prefix=key_prefix,
@@ -5301,20 +6117,29 @@ def render_symbol_chart(
     st.caption(
         "Zoom mit Mausrad, Pan ueber Ziehen. Pink markiert System-/Alert-Linien und gespeicherte Erkennungspunkte."
     )
-    render_chart_line_tools(
-        store,
-        email,
-        ticker,
-        timeframe,
-        history,
-        chart_lines,
-        key_prefix=make_key(key_prefix, "lines"),
-    )
+    if active_tools.get("Linien", False):
+        render_chart_line_tools(
+            store,
+            email,
+            ticker,
+            timeframe,
+            history,
+            chart_lines,
+            key_prefix=make_key(key_prefix, "lines"),
+        )
+    else:
+        st.caption("Linien sind ausgeblendet. Aktiviere unten in der Werkzeugleiste 'Linien', um gespeicherte Linien und Linienwerkzeuge zu sehen.")
 
 
 def chart_system_toolbar_state(key_prefix: str, ticker: str, timeframe: str) -> dict[str, bool]:
+    defaults = {"Linien": True}
     return {
-        tool: bool(st.session_state.get(chart_system_tool_key(key_prefix, ticker, timeframe, tool), False))
+        tool: bool(
+            st.session_state.get(
+                chart_system_tool_key(key_prefix, ticker, timeframe, tool),
+                defaults.get(tool, False),
+            )
+        )
         for tool in CHART_SYSTEM_TOOLS
     }
 
@@ -5343,9 +6168,11 @@ def render_chart_system_toolbar(
         unsafe_allow_html=True,
     )
 
-    first_row = CHART_SYSTEM_TOOLS[:5]
-    second_row = CHART_SYSTEM_TOOLS[5:]
-    for row_index, tools in enumerate([first_row, second_row]):
+    tool_rows = [
+        CHART_SYSTEM_TOOLS[index : index + 5]
+        for index in range(0, len(CHART_SYSTEM_TOOLS), 5)
+    ]
+    for row_index, tools in enumerate(tool_rows):
         columns = st.columns(len(tools))
         for index, tool in enumerate(tools):
             with columns[index]:
@@ -5365,6 +6192,8 @@ def add_chart_system_overlays(
 ) -> None:
     if active_tools.get("Beobachtung"):
         add_observation_overlay(fig, history, row)
+    if active_tools.get("EMA Signale"):
+        add_ema_signal_overlay(fig, history)
     if active_tools.get("Fibonacci"):
         add_fibonacci_overlay(fig, history)
     if active_tools.get("Alligator"):
@@ -5406,6 +6235,158 @@ def add_observation_overlay(fig, history: pd.DataFrame, row: dict) -> None:
         row=1,
         col=1,
     )
+
+
+def add_ema_signal_overlay(fig, history: pd.DataFrame) -> None:
+    if history.empty or not {"ema_20", "ema_50", "close"}.issubset(history.columns):
+        return
+    frame = history[["date", "close", "ema_20", "ema_50"]].copy()
+    frame["ema_spread"] = pd.to_numeric(frame["ema_20"], errors="coerce") - pd.to_numeric(
+        frame["ema_50"],
+        errors="coerce",
+    )
+    frame["prev_spread"] = frame["ema_spread"].shift(1)
+    frame = frame.dropna(subset=["date", "close", "ema_spread", "prev_spread"])
+    if frame.empty:
+        return
+
+    bullish = frame[(frame["ema_spread"] > 0) & (frame["prev_spread"] <= 0)].tail(10)
+    bearish = frame[(frame["ema_spread"] < 0) & (frame["prev_spread"] >= 0)].tail(10)
+    if not bullish.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=bullish["date"],
+                y=bullish["close"],
+                mode="markers",
+                name="EMA20 > EMA50",
+                marker=dict(symbol="triangle-up", size=11, color="#22c55e"),
+                hovertemplate="EMA-Cross hoch<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+    if not bearish.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=bearish["date"],
+                y=bearish["close"],
+                mode="markers",
+                name="EMA20 < EMA50",
+                marker=dict(symbol="triangle-down", size=11, color="#f43f5e"),
+                hovertemplate="EMA-Cross runter<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+
+
+def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    close = pd.to_numeric(close, errors="coerce")
+    delta = close.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    average_gain = gains.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    average_loss = losses.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    relative_strength = average_gain / average_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + relative_strength))
+    return rsi.clip(lower=0, upper=100)
+
+
+def add_rsi_panel(fig, history: pd.DataFrame, panel_row: int) -> None:
+    if history.empty or "close" not in history:
+        return
+    frame = history[["date", "close"]].copy()
+    frame["rsi_14"] = calculate_rsi(frame["close"], period=14)
+    frame = frame.dropna(subset=["date", "rsi_14"])
+    if frame.empty:
+        return
+
+    fig.add_trace(
+        go.Scatter(
+            x=frame["date"],
+            y=frame["rsi_14"],
+            mode="lines",
+            name="RSI14",
+            line=dict(width=1.7, color=SYSTEM_ALERT_COLOR),
+            hovertemplate="RSI14<br>%{x|%Y-%m-%d}<br>%{y:.1f}<extra></extra>",
+        ),
+        row=panel_row,
+        col=1,
+    )
+    for level, color in [(70, "rgba(244, 63, 94, 0.72)"), (30, "rgba(34, 197, 94, 0.72)")]:
+        fig.add_trace(
+            go.Scatter(
+                x=[frame["date"].iloc[0], frame["date"].iloc[-1]],
+                y=[level, level],
+                mode="lines",
+                name=f"RSI {level}",
+                line=dict(width=1, dash="dot", color=color),
+                hoverinfo="skip",
+            ),
+            row=panel_row,
+            col=1,
+        )
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=panel_row, col=1)
+
+
+def add_relative_strength_panel(
+    fig,
+    config: dict,
+    result: dict,
+    ticker: str,
+    timeframe: str,
+    panel_row: int,
+) -> None:
+    benchmark = str(config.get("benchmark", "QQQ") or "QQQ").upper()
+    ticker_key = str(ticker).upper()
+    if benchmark == ticker_key:
+        benchmark = "SPY"
+
+    symbol_history = chart_history(config, result, ticker_key, timeframe)
+    benchmark_history = chart_history(config, result, benchmark, timeframe)
+    if symbol_history.empty or benchmark_history.empty:
+        return
+
+    symbol = symbol_history[["date", "close"]].rename(columns={"close": "symbol_close"}).copy()
+    bench = benchmark_history[["date", "close"]].rename(columns={"close": "benchmark_close"}).copy()
+    merged = symbol.merge(bench, on="date", how="inner").sort_values("date")
+    merged["symbol_close"] = pd.to_numeric(merged["symbol_close"], errors="coerce")
+    merged["benchmark_close"] = pd.to_numeric(merged["benchmark_close"], errors="coerce")
+    merged = merged.dropna(subset=["date", "symbol_close", "benchmark_close"])
+    merged = merged[(merged["symbol_close"] > 0) & (merged["benchmark_close"] > 0)]
+    if merged.empty:
+        return
+
+    merged["rs_line"] = merged["symbol_close"] / merged["benchmark_close"]
+    first_value = float(merged["rs_line"].iloc[0])
+    if first_value <= 0:
+        return
+    merged["rs_line"] = merged["rs_line"] / first_value * 100
+    fig.add_trace(
+        go.Scatter(
+            x=merged["date"],
+            y=merged["rs_line"],
+            mode="lines",
+            name=f"RS vs {benchmark}",
+            line=dict(width=1.8, color="#38bdf8"),
+            hovertemplate=f"RS vs {benchmark}<br>%{{x|%Y-%m-%d}}<br>%{{y:.2f}}<extra></extra>",
+        ),
+        row=panel_row,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[merged["date"].iloc[0], merged["date"].iloc[-1]],
+            y=[100, 100],
+            mode="lines",
+            name="RS Basis 100",
+            line=dict(width=1, dash="dot", color="rgba(245, 245, 247, 0.42)"),
+            hoverinfo="skip",
+        ),
+        row=panel_row,
+        col=1,
+    )
+    fig.update_yaxes(title_text=f"RS {benchmark}", row=panel_row, col=1)
 
 
 def add_fibonacci_overlay(fig, history: pd.DataFrame) -> None:
@@ -6627,6 +7608,143 @@ def sector_rotation_categories(config: dict) -> list[str]:
         if text and text not in cleaned:
             cleaned.append(text)
     return cleaned or DEFAULT_SECTOR_ROTATION_CATEGORIES
+
+
+def render_market_regime(config: dict, key_prefix: str) -> None:
+    result = st.session_state.get("analysis_result", {})
+    render_section_title(
+        "Market Regime",
+        "Regime-Erkennung ueber Monthly, Weekly und Daily. Nur Marktanalyse, keine Signale.",
+    )
+    st.info(
+        "Dies ist keine Handelsentscheidung, kein Kaufsignal und kein Verkaufssignal. "
+        "Die Engine analysiert nur das aktuelle Marktumfeld und ordnet passende Strategie-Typen zu."
+    )
+
+    col_action, col_report = st.columns(2)
+    with col_action:
+        if st.button(
+            "Regime neu berechnen",
+            key=make_key(key_prefix, "refresh"),
+            type="primary",
+            width="stretch",
+        ):
+            _run_update(config, generate_reports=True, include_sector_rotation=True)
+            result = st.session_state.get("analysis_result", {})
+    with col_report:
+        if st.button(
+            "Regime-Reports speichern",
+            key=make_key(key_prefix, "save_reports"),
+            width="stretch",
+        ):
+            evaluation = evaluate_market_regime(config, result)
+            paths = write_market_regime_reports(evaluation, Path(config.get("reports_dir", "reports")))
+            st.success("Regime-Reports gespeichert: " + ", ".join(path.name for path in paths))
+
+    evaluation = evaluate_market_regime(config, result)
+    for issue in evaluation.get("issues", []):
+        st.warning(issue)
+
+    contexts = evaluation.get("contexts", {})
+    if any(not context.get("sectors") for context in contexts.values()):
+        st.warning(
+            "Sektor-Daten sind noch nicht voll geladen. Klicke Regime neu berechnen, "
+            "damit Sektor-Rotation und Risk-On/Risk-Off voll bewertet werden."
+        )
+
+    summary = evaluation.get("summary", pd.DataFrame())
+    if summary.empty:
+        render_empty_state(
+            "Keine Regime-Auswertung verfuegbar",
+            "Starte Regime neu berechnen. Wenn Kernmarktdaten fehlen, zeigt die App hier eine saubere Meldung.",
+        )
+        return
+
+    timeframes = summary["Timeframe"].tolist()
+    selected_timeframe = st.selectbox(
+        "Zeitebene",
+        timeframes,
+        key=make_key(key_prefix, "timeframe"),
+    )
+    selected_row = summary[summary["Timeframe"] == selected_timeframe].iloc[0].to_dict()
+    ranking = evaluation.get("rankings", {}).get(selected_timeframe, pd.DataFrame())
+
+    active_regime = str(selected_row.get("Active Regime", "n/a"))
+    confidence = safe_float(selected_row.get("Confidence Score"), 0)
+    volatility = str(selected_row.get("Volatility Status", "Normal"))
+    strongest_sector = str(selected_row.get("Strongest Sector", "nicht verfuegbar"))
+    strategy = str(selected_row.get("Recommended Strategy", "Analyse beobachten"))
+    explanation = str(selected_row.get("Explanation", "Keine Erklaerung verfuegbar."))
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Aktives Regime", active_regime)
+    col2.metric("Vertrauen", f"{confidence:.0f}%")
+    col3.metric("Volatilitaet", volatility)
+    col4.metric("Staerkster Sektor", strongest_sector)
+
+    st.markdown(
+        f"""
+        <div class="sensei-callout sensei-alert-callout">
+            <strong>Analyse:</strong> {escape(explanation)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    render_section_title("Status", "SPY, QQQ, GLD und Strategie-Zuordnung.")
+    status_cols = st.columns(4)
+    status_items = [
+        ("SPY", selected_row.get("SPY Status", "Daten fehlen"), "blue"),
+        ("QQQ", selected_row.get("QQQ Status", "Daten fehlen"), "blue"),
+        ("GLD", selected_row.get("GLD Status", "Daten fehlen"), "yellow"),
+        ("Strategie-Typ", strategy, "pink"),
+    ]
+    for column, (title, value, color) in zip(status_cols, status_items):
+        with column:
+            st.markdown(
+                f"""
+                <div class="sensei-mini-card">
+                    <div class="sensei-card-label">{escape(title)}</div>
+                    <div class="sensei-card-value">{status_badge_html(value, color)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if not ranking.empty:
+        render_section_title("Regime Ranking", "Alle Regime werden bewertet und nach Score sortiert.")
+        fig = px.bar(
+            ranking,
+            x="Score",
+            y="Regime",
+            orientation="h",
+            color="Score",
+            color_continuous_scale=["#5f6673", "#f5c542", "#4aa3ff", "#22c55e"],
+            range_x=[0, 100],
+            title=f"Regime Scores - {selected_timeframe}",
+        )
+        fig.update_layout(height=430, margin=dict(l=10, r=10, t=45, b=10), yaxis={"categoryorder": "total ascending"})
+        style_plotly_figure(fig)
+        render_plotly_chart(fig, key=make_key(key_prefix, "ranking_plotly", selected_timeframe))
+        st.dataframe(
+            ranking,
+            width="stretch",
+            hide_index=True,
+            key=make_key(key_prefix, "ranking_dataframe", selected_timeframe),
+            column_config={
+                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+                "Strategy Type": "Strategie-Typ",
+                "Description": "Beschreibung",
+            },
+        )
+
+    with st.expander(f"Strategie-Zuordnung anzeigen ({key_prefix})", expanded=False):
+        st.dataframe(
+            evaluation.get("strategy_map", pd.DataFrame()),
+            width="stretch",
+            hide_index=True,
+            key=make_key(key_prefix, "strategy_map"),
+        )
 
 
 def render_backtesting(config: dict, key_prefix: str) -> None:
@@ -8761,8 +9879,11 @@ def render_account_bar() -> None:
     email = st.session_state.get("authenticated_email")
     if not email:
         return
-    with st.sidebar:
+    st.markdown("<div class='sensei-account-strip'>", unsafe_allow_html=True)
+    account_col, action_col = st.columns([0.78, 0.22], gap="small")
+    with account_col:
         st.caption(f"Angemeldet als {email}")
+    with action_col:
         if st.button(
             "Logout",
             key=make_key("auth", "logout"),
@@ -8780,6 +9901,7 @@ def render_account_bar() -> None:
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def read_allowed_email_secrets() -> list[str]:
@@ -9135,26 +10257,51 @@ def tracking_symbols(config: dict) -> list[str]:
     return unique or ["SPY"]
 
 
-def analysis_row_for_ticker(result: dict, ticker: str, timeframe: str) -> dict:
+def analysis_combined_frame(result: dict) -> pd.DataFrame:
     frames = [
         result.get("dashboard", pd.DataFrame()),
         result.get("watchlist", pd.DataFrame()),
+        result.get("sector_rotation", pd.DataFrame()),
     ]
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def exact_analysis_row_for_ticker(result: dict, ticker: str, timeframe: str) -> dict:
+    combined = analysis_combined_frame(result)
+    if combined.empty or not {"ticker", "timeframe"}.issubset(combined.columns):
         return {}
 
-    combined = pd.concat(frames, ignore_index=True)
     combined["ticker_lookup"] = combined["ticker"].astype(str).str.upper()
+    combined["timeframe_lookup"] = combined["timeframe"].astype(str)
     ticker_lookup = str(ticker).upper()
     exact = combined[
-        (combined["ticker_lookup"] == ticker_lookup) & (combined["timeframe"] == timeframe)
+        (combined["ticker_lookup"] == ticker_lookup) & (combined["timeframe_lookup"] == str(timeframe))
+    ]
+    if exact.empty:
+        return {}
+    row = exact.iloc[0].drop(labels=["ticker_lookup", "timeframe_lookup"], errors="ignore")
+    return row.to_dict()
+
+
+def analysis_row_for_ticker(result: dict, ticker: str, timeframe: str) -> dict:
+    combined = analysis_combined_frame(result)
+    if combined.empty:
+        return {}
+
+    combined["ticker_lookup"] = combined["ticker"].astype(str).str.upper()
+    combined["timeframe_lookup"] = combined["timeframe"].astype(str)
+    ticker_lookup = str(ticker).upper()
+    exact = combined[
+        (combined["ticker_lookup"] == ticker_lookup) & (combined["timeframe_lookup"] == str(timeframe))
     ]
     if exact.empty:
         exact = combined[combined["ticker_lookup"] == ticker_lookup]
     if exact.empty:
         return {}
-    row = exact.iloc[0].drop(labels=["ticker_lookup"], errors="ignore")
+    row = exact.iloc[0].drop(labels=["ticker_lookup", "timeframe_lookup"], errors="ignore")
     return row.to_dict()
 
 
@@ -9358,13 +10505,13 @@ def style_plotly_figure(fig):
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(15,20,27,0.96)",
-        font=dict(color="#eef2f7"),
-        title_font=dict(color="#eef2f7"),
-        legend=dict(font=dict(color="#eef2f7")),
+        plot_bgcolor="rgba(17,17,19,0.96)",
+        font=dict(color="#f5f5f7"),
+        title_font=dict(color="#f5f5f7"),
+        legend=dict(font=dict(color="#f5f5f7")),
     )
-    fig.update_xaxes(gridcolor="rgba(148,163,184,0.16)", zerolinecolor="rgba(148,163,184,0.18)")
-    fig.update_yaxes(gridcolor="rgba(148,163,184,0.16)", zerolinecolor="rgba(148,163,184,0.18)")
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.10)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.10)")
     return fig
 
 
@@ -9569,9 +10716,23 @@ def render_report_previews(config: dict, compact: bool, key_prefix: str) -> None
     market_path = reports_dir / "market_summary.csv"
     watchlist_path = reports_dir / "watchlist.csv"
     sector_rotation_path = reports_dir / "sector_rotation.csv"
+    market_regime_path = reports_dir / "market_regime_report.csv"
+    regime_history_path = reports_dir / "regime_history.csv"
+    regime_strategy_path = reports_dir / "regime_strategy_map.csv"
     evening_path = reports_dir / "evening_summary.txt"
 
-    if not any(path.exists() for path in [market_path, watchlist_path, sector_rotation_path, evening_path]):
+    if not any(
+        path.exists()
+        for path in [
+            market_path,
+            watchlist_path,
+            sector_rotation_path,
+            market_regime_path,
+            regime_history_path,
+            regime_strategy_path,
+            evening_path,
+        ]
+    ):
         if not compact:
             render_empty_state(
                 "Noch keine Reports",
@@ -9603,6 +10764,30 @@ def render_report_previews(config: dict, compact: bool, key_prefix: str) -> None
                 width="stretch",
                 hide_index=True,
                 key=make_key(key_prefix, "sector_rotation_dataframe"),
+            )
+        if market_regime_path.exists():
+            st.markdown("**market_regime_report.csv**")
+            st.dataframe(
+                pd.read_csv(market_regime_path),
+                width="stretch",
+                hide_index=True,
+                key=make_key(key_prefix, "market_regime_dataframe"),
+            )
+        if regime_history_path.exists():
+            st.markdown("**regime_history.csv**")
+            st.dataframe(
+                pd.read_csv(regime_history_path),
+                width="stretch",
+                hide_index=True,
+                key=make_key(key_prefix, "regime_history_dataframe"),
+            )
+        if regime_strategy_path.exists():
+            st.markdown("**regime_strategy_map.csv**")
+            st.dataframe(
+                pd.read_csv(regime_strategy_path),
+                width="stretch",
+                hide_index=True,
+                key=make_key(key_prefix, "regime_strategy_dataframe"),
             )
         if evening_path.exists():
             st.markdown("**evening_summary.txt**")
